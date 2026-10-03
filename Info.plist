@@ -4,5 +4,14 @@
 <dict>
 	<key>API_BASE_URL</key>
 	<string>https://baking-picked-uncle-regardless.trycloudflare.com/api</string>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+		<key>UIImageName</key>
+		<string>Logo</string>
+		<key>UIImageRespectsSafeAreaInsets</key>
+		<false/>
+	</dict>
 </dict>
 </plist>

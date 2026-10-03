@@ -96,14 +96,13 @@ struct GhostButton: View {
 }
 
 struct BrandMark: View {
-    var size: CGFloat = 56
+    var width: CGFloat = 180
     var body: some View {
-        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-            .fill(Color.csCyan)
-            .frame(width: size, height: size)
-            .overlay {
-                Text("+").font(.system(size: size * 0.46, weight: .black)).foregroundStyle(.white)
-            }
+        Image("Logo")
+            .resizable()
+            .scaledToFit()
+            .frame(width: width)
+            .accessibilityLabel("Last Mile Link")
     }
 }
 

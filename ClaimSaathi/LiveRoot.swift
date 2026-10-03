@@ -160,6 +160,7 @@ private struct HomeTab: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 10) {
+                        BrandMark(width: 156)
                         Text("Good to see you").font(.footnote).foregroundStyle(.white.opacity(0.75))
                         Text(app.home?.user.name ?? app.user?.name ?? "Claim Saathi")
                             .font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
