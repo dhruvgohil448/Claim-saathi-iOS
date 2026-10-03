@@ -258,6 +258,9 @@ struct ChatScreen: View {
     @State private var chips: [String] = []
     @State private var sending = false
     @State private var error: String?
+    @State private var hindi = false
+    @State private var sarvamVoice = false
+    @StateObject private var voice = SaathiVoice()
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
@@ -267,10 +270,18 @@ struct ChatScreen: View {
                         Text("Ask Saathi").font(.title3.bold()).foregroundStyle(.white)
                         HStack(spacing: 5) {
                             Circle().fill(Color.csSuccess).frame(width: 7, height: 7)
-                            Text("AI claim assistant · English & हिंदी").font(.caption).foregroundStyle(.white.opacity(0.8))
+                            Text(sarvamVoice ? "AI claim assistant · Voice by Sarvam AI" : "AI claim assistant · English & हिंदी").font(.caption).foregroundStyle(.white.opacity(0.8))
                         }
                     }
                     Spacer()
+                    HStack(spacing: 0) {
+                        ForEach([false, true], id: \.self) { h in
+                            Button(h ? "हिं" : "EN") { hindi = h }
+                                .font(.footnote.bold()).padding(.horizontal, 10).padding(.vertical, 5)
+                                .foregroundStyle(hindi == h ? Color.csNavy : .white)
+                                .background(hindi == h ? Color.white : Color.clear).clipShape(Capsule())
+                        }
+                    }.padding(3).background(Color.white.opacity(0.15)).clipShape(Capsule())
                     if inSheet {
                         Button { dismiss() } label: { Image(systemName: "xmark").font(.footnote.bold()).foregroundStyle(.white).padding(10).background(Color.white.opacity(0.15)).clipShape(Circle()) }
                     }
@@ -313,14 +324,25 @@ struct ChatScreen: View {
                     }
                 }
                 HStack(spacing: 8) {
-                    TextField("Ask about your claim or money…", text: $input).padding(12).background(Color.csBackground).clipShape(RoundedRectangle(cornerRadius: 14)).onSubmit { send(input) }
+                    Button { mic() } label: { Image(systemName: voice.recording ? "stop.fill" : "mic.fill").padding(12).foregroundStyle(voice.recording ? .white : Color.csNavy).background(voice.recording ? Color.csError : Color.csPale).clipShape(Circle()) }
+                        .disabled(sending && !voice.recording)
+                    TextField(voice.recording ? (hindi ? "सुन रहा हूँ… रोकने के लिए ■ दबाएँ" : "Listening… tap ■ to stop") : (hindi ? "अपना सवाल लिखें या बोलें…" : "Ask about your claim or money…"), text: $input).padding(12).background(Color.csBackground).clipShape(RoundedRectangle(cornerRadius: 14)).onSubmit { send(input) }
                     Button { send(input) } label: { Image(systemName: "paperplane.fill").padding(12).foregroundStyle(.white).background(input.trimmingCharacters(in: .whitespaces).isEmpty ? Color.csCyan.opacity(0.4) : Color.csCyan).clipShape(Circle()) }
                         .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || sending)
                 }.padding(12).background(Color.white)
             }
             .background(Color.csBackground)
             .toolbar(.hidden, for: .navigationBar)
+            .onChange(of: hindi) { _, h in
+                Task {
+                    guard messages.count <= 1, let s = try? await API.shared.chatSuggestions(lang: h ? "hi" : nil) else { return }
+                    if let g = s.greeting { messages = [ChatMessage(mine: false, text: g)] }
+                    chips = h ? (s.suggestions ?? []) : (s.suggestions ?? []) + Self.quickActions.filter { !(s.suggestions ?? []).contains($0) }
+                }
+            }
+            .onDisappear { voice.stopSpeaking() }
             .task {
+                if let v = try? await API.shared.voiceStatus() { sarvamVoice = v.sarvam ?? false }
                 guard messages.isEmpty else { return }
                 chips = Self.quickActions
                 if let s = try? await API.shared.chatSuggestions() {
@@ -346,19 +368,34 @@ struct ChatScreen: View {
                     .shadow(color: Color.csNavy.opacity(m.mine ? 0 : 0.05), radius: 4, y: 2)
                     .frame(maxWidth: 290, alignment: m.mine ? .trailing : .leading)
                 ForEach(m.cards, id: \.self) { FinanceCardView(card: $0) }
+                if !m.mine {
+                    Button { Task { await voice.speak(m.text, hindi: hindi || isHindiText(m.text)) } } label: { Label("Listen", systemImage: "speaker.wave.2.fill").font(.caption.weight(.semibold)).foregroundStyle(Color.csCyan) }.buttonStyle(.plain)
+                }
             }
         }.frame(maxWidth: .infinity, alignment: m.mine ? .trailing : .leading)
     }
 
-    private func send(_ text: String) {
+    private func mic() {
+        Task {
+            if voice.recording {
+                sending = true
+                let text = await voice.stopAndTranscribe(hindi: hindi)
+                sending = false
+                if let text, !text.isEmpty { send(text, speak: true) } else { error = hindi ? "आवाज़ समझ नहीं आई, फिर से कोशिश करें" : "Didn’t catch that, please try again" }
+            } else if let e = await voice.start() { error = e } else { error = nil }
+        }
+    }
+
+    private func send(_ text: String, speak: Bool = false) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, !sending else { return }
         withAnimation(.spring(duration: 0.3)) { messages.append(ChatMessage(mine: true, text: t)) }; input = ""; sending = true; error = nil
         let claimId = contextClaimId ?? app.home?.currentClaim?.id
         Task {
             do {
-                let r = try await API.shared.chat(t, claimId: claimId)
+                let r = try await API.shared.chat(t, claimId: claimId, lang: hindi ? "hi" : nil)
                 withAnimation(.spring(duration: 0.3)) { messages.append(ChatMessage(mine: false, text: r.answer, cards: r.cards ?? [])) }
+                if speak { Task { await voice.speak(r.answer, hindi: hindi || isHindiText(r.answer)) } }
                 chips = r.suggestions ?? r.followUps ?? chips
             } catch { self.error = error.localizedDescription }
             sending = false

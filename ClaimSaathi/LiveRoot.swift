@@ -557,6 +557,9 @@ private struct ChecklistView: View {
                 if let progress = list?.progress {
                     UploadProgressBar(done: progress.verified ?? 0, total: progress.required ?? 0).padding(.vertical, 4)
                 }
+                if (list?.progress?.verified ?? 0) >= 6 {
+                    PredictionCard(claimId: claimId, refreshKey: "\(list?.progress?.verified ?? 0)").listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                }
                 if let next = list?.items?.first(where: { $0.status != .verified }) {
                     SaathiTip(text: "Next up: \(next.label ?? "document"). Tap it to take a photo or pick a file — I’ll check it instantly.\(next.fix.map { " Tip: \($0)" } ?? "")")
                         .listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
@@ -701,6 +704,7 @@ private struct TrackingView: View {
                 }
                 if !(d.warnings ?? []).isEmpty { WarningList(warnings: d.warnings ?? []).listRowBackground(Color.clear) }
             }
+            PredictionCard(claimId: claimId, refreshKey: timeline?.status?.rawValue ?? "").listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             if let update = timeline?.latestOpsUpdate?.message {
                 CSCard {
                     VStack(alignment: .leading, spacing: 6) {
@@ -746,6 +750,7 @@ private struct TrackingView: View {
             }
             NavigationLink("All queries") { QueriesView() }
             NavigationLink("Upload documents") { ChecklistView(claimId: claimId) }
+            NavigationLink { BillAnalysisView(claimId: claimId) } label: { Label("Bill analysis (AI)", systemImage: "doc.text.magnifyingglass") }
             NavigationLink("Settlement") { SettlementView(claimId: claimId) }
             if let error { Text(error).foregroundStyle(Color.csError) }
         }
