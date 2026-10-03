@@ -1,330 +1,222 @@
-import SwiftUI
+import Foundation
 
-enum AppTab: Hashable {
-    case home, claims, docs, assistant, profile
-}
-
-enum ClaimStatus: String, Hashable {
-    case submitted = "Submitted"
-    case docsVerified = "Docs verified"
-    case underReview = "Under review"
-    case actionRequired = "Action required"
-    case approved = "Approved"
-    case settled = "Settled"
-
-    var tint: Color {
-        switch self {
-        case .submitted, .underReview: return .csCyan
-        case .docsVerified, .approved, .settled: return .csSuccess
-        case .actionRequired: return .csWarning
-        }
+enum ClaimStatus: String, Decodable, CaseIterable {
+    case CREATED, PREAUTH_SUBMITTED, DOCS_PENDING, UNDER_REVIEW, QUERY_RAISED, NEEDS_HUMAN, APPROVED, REJECTED, SETTLED, unknown
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = ClaimStatus(rawValue: raw) ?? .unknown
     }
 }
-
-enum DocStatus: String {
-    case verified = "Verified"
-    case needsReview = "Needs review"
-    case missing = "Missing"
-
-    var tint: Color {
-        switch self {
-        case .verified: return .csSuccess
-        case .needsReview: return .csWarning
-        case .missing: return .csError
-        }
-    }
+enum ClaimType: String, Decodable { case CASHLESS, REIMBURSEMENT, unknown
+    init(from decoder: Decoder) throws { self = ClaimType(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum DocumentType: String, Decodable, CaseIterable {
+    case HEALTH_CARD, POLICY_SCHEDULE, CLAIM_FORM, PREAUTH_FORM, DOCTOR_ESTIMATE, DISCHARGE_SUMMARY
+    case HOSPITAL_BILL, PHARMACY_BILL, LAB_REPORT, PRESCRIPTION, PAYMENT_RECEIPT, ID_PROOF, OTHER, unknown
+    init(from decoder: Decoder) throws { self = DocumentType(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum DocumentStatus: String, Decodable { case UPLOADED, VERIFIED, NEEDS_REVIEW, INVALID, unknown
+    init(from decoder: Decoder) throws { self = DocumentStatus(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum QueryStatus: String, Decodable { case OPEN, ANSWERED, CLOSED, unknown
+    init(from decoder: Decoder) throws { self = QueryStatus(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum AppDocStatus: String, Decodable { case uploaded, verified, missing, rejected, unknown
+    init(from decoder: Decoder) throws { self = AppDocStatus(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum StepState: String, Decodable { case done, current, pending, failed, unknown
+    init(from decoder: Decoder) throws { self = StepState(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum SettlementStatus: String, Decodable { case PREVIEW, ESTIMATED, APPROVED, PAID, unknown
+    init(from decoder: Decoder) throws { self = SettlementStatus(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum NotificationType: String, Decodable { case INFO, SUCCESS, WARNING, ACTION_REQUIRED, unknown
+    init(from decoder: Decoder) throws { self = NotificationType(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
+}
+enum ActorType: String, Decodable { case AI, HUMAN, SYSTEM, unknown
+    init(from decoder: Decoder) throws { self = ActorType(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown }
 }
 
-enum StepState {
-    case done, current, upcoming
-}
-
-struct TimelineStep: Identifiable, Hashable {
-    let id = UUID()
-    let title: String
-    let detail: String
-    var state: StepState
-}
-
-struct ClaimDocument: Identifiable, Hashable {
+struct User: Decodable, Identifiable, Hashable {
     let id: String
-    let title: String
+    var name: String
+    var email: String?
+    var phone: String?
+    var city: String?
+    var dob: String?
+    var gender: String?
+    var profileComplete: Bool?
+}
+
+struct Member: Decodable, Hashable { var name: String?; var relation: String? }
+struct Policy: Decodable, Identifiable, Hashable {
+    let id: String
+    var insurer: String?
+    var planName: String?
+    var policyNumber: String?
+    var sumInsured: Int?
+    var roomRentLimit: Int?
+    var coPayPercent: Double?
+    var members: [Member]?
+}
+struct HomeChecklist: Decodable, Hashable {
+    var required: [String]?
+    var verified: [String]?
+    var missing: [String]?
+}
+struct Claim: Decodable, Identifiable, Hashable {
+    let id: String
+    var claimNumber: String?
+    var hospital: String?
+    var reason: String?
+    var status: ClaimStatus?
+    var billAmount: Int?
+    var estimatedAmount: Int?
+    var checklist: HomeChecklist?
+}
+struct Deduction: Decodable, Hashable { var label: String?; var amount: Int?; var reason: String?; var clause: String? }
+struct Settlement: Decodable, Hashable {
+    var billAmount: Int?
+    var deductions: [Deduction]?
+    var coPayAmount: Int?
+    var approvedAmount: Int?
+    var status: SettlementStatus?
+    var utr: String?
+    var isDemo: Bool?
+    var preview: Bool?
+}
+struct ClaimRef: Decodable, Hashable { var id: String?; var claimNumber: String?; var hospital: String? }
+struct PendingAction: Decodable, Hashable { var kind: String; var title: String; var claimId: String?; var queryId: String? }
+struct HomeCounts: Decodable, Hashable { var unreadNotifications: Int?; var activeClaims: Int?; var openQueries: Int? }
+struct Home: Decodable { var user: User; var activePolicy: Policy?; var currentClaim: Claim?; var pendingActions: [PendingAction]?; var counts: HomeCounts?; var paidOut: Int? }
+struct AuthResponse: Decodable { var token: String; var user: User; var needsProfile: Bool? }
+struct ProfileResponse: Decodable { var user: User; var token: String }
+struct OtpSent: Decodable { var sent: Bool? }
+struct Coverage: Decodable, Hashable { var item: String?; var detail: String? }
+struct WaitingStatus: Decodable, Hashable { var name: String?; var active: Bool?; var status: String? }
+struct PolicyAnalysis: Decodable {
+    var insurer: String?
+    var policyNumber: String?
+    var whatIsCovered: String?
+    var coverage: [Coverage]?
+    var exclusions: [String]?
+    var waitingPeriods: [WaitingStatus]?
+}
+struct AddPolicyResponse: Decodable { var policy: Policy; var extractedFromPdf: Bool? }
+struct ChecklistItem: Decodable, Identifiable, Hashable {
+    var id: String { type?.rawValue ?? label ?? "item" }
+    var type: DocumentType?
+    var label: String?
+    var status: AppDocStatus?
     var fileName: String?
-    var status: DocStatus
-    var note: String
+    var fix: String?
 }
-
-struct DeductionLine: Identifiable, Hashable {
-    let id = UUID()
-    let title: String
-    let amount: Int
-    let reason: String
+struct DocProgress: Decodable { var required: Int?; var verified: Int? }
+struct Checklist: Decodable { var claimId: String?; var items: [ChecklistItem]?; var warnings: [String]?; var progress: DocProgress? }
+struct ValidationCheck: Decodable, Identifiable {
+    var id: String { key ?? label ?? "check" }
+    var key: String?
+    var label: String?
+    var passed: Bool?
+    var detail: String?
 }
-
-struct Settlement: Hashable {
-    let billAmount: Int
-    let lines: [DeductionLine]
-    let approvedAmount: Int
-    var deductions: Int { lines.reduce(0) { $0 + $1.amount } }
+struct UploadValidation: Decodable { var appStatus: AppDocStatus?; var confidence: Double?; var summary: String?; var fix: String?; var checks: [ValidationCheck]?; var warnings: [String]? }
+struct UploadResponse: Decodable { var validation: UploadValidation?; var checklist: Checklist? }
+struct Step: Decodable, Hashable, Identifiable {
+    var id: String { key ?? label ?? "step" }
+    var key: String?
+    var label: String?
+    var state: StepState?
+    var note: String?
 }
-
-struct Claim: Identifiable, Hashable {
-    let id: String
-    let hospital: String
-    let reason: String
-    let amount: Int
-    var status: ClaimStatus
-    let updated: String
-    var steps: [TimelineStep]
-    var query: String?
-    var settlement: Settlement?
+struct OpsUpdate: Decodable, Hashable { var message: String? }
+struct Timeline: Decodable { var claimNumber: String?; var status: ClaimStatus?; var steps: [Step]?; var openQueries: [Query]?; var latestOpsUpdate: OpsUpdate? }
+struct Grounded: Decodable, Hashable { var policyNumber: String?; var claimNumber: String? }
+struct ChatReply: Decodable { var answer: String; var followUps: [String]?; var grounded: Grounded? }
+struct Query: Decodable, Identifiable {
+    var id: String
+    var message: String?
+    var requestedDocType: DocumentType?
+    var status: QueryStatus?
+    var claim: ClaimRef?
+    var document: UploadResponse?
 }
+struct AppNotification: Decodable, Identifiable, Hashable { var id: String; var claimId: String?; var title: String?; var body: String? }
+struct NotificationsPage: Decodable { var items: [AppNotification]; var unread: Int? }
+struct CoverageResult: Decodable { var warnings: [String]? }
+struct QueryExplain: Decodable { var explanation: String? }
+struct BankMasked: Decodable { var accountNumberMasked: String?; var ifsc: String? }
+struct BankResponse: Decodable { var bank: BankMasked? }
 
-struct ChatMessage: Identifiable, Hashable {
-    let id = UUID()
-    let isUser: Bool
-    let text: String
+struct PhoneBody: Encodable { let phone: String }
+struct VerifyBody: Encodable { let phone: String; let otp: String }
+struct ProfileBody: Encodable { var name: String; var email: String; var dob: String; var gender: String; var city: String? }
+struct ProfilePatch: Encodable { var name: String?; var city: String? }
+struct AddPolicyBody: Encodable { var insurer: String; var policyNumber: String; var sumInsured: Int; var startDate: String; var roomRentLimit: Int?; var coPayPercent: Double? }
+struct BankBody: Encodable { var accountName: String; var accountNumber: String; var ifsc: String; var bankName: String?; var otp: String }
+struct CreateClaimBody: Encodable {
+    var policyId: String
+    var type: String
+    var hospital: String
+    var hospitalCity: String?
+    var reason: String
+    var admissionType: String = "EMERGENCY"
+    var billAmount: Int?
+    var estimatedAmount: Int?
+    var patientName: String
+    var consentOtp: String?
 }
+struct ChatBody: Encodable { var message: String; var claimId: String? }
 
-struct PolicySummary {
-    let insurer = "Star Health"
-    let product = "Family Health Optima"
-    let number = "POL-88421"
-    let holder = "Rajesh Sharma"
-    let sumInsured = 500_000
-    let roomRentPerDay = 5_000
-    let coPay = "10%"
-    let waitingPeriods = [
-        "Initial waiting period: 30 days",
-        "Pre-existing conditions: 2 years",
-        "Specific illnesses: 1 year"
-    ]
-    let exclusions = [
-        "Cosmetic treatment",
-        "Dental care, unless caused by an accident",
-        "Items listed as non-payable consumables"
-    ]
-}
+extension API {
+    func sendOtp(_ phone: String) async throws -> OtpSent { try await request("auth/otp/send", method: "POST", json: PhoneBody(phone: phone)) }
+    func verifyOtp(_ phone: String, _ otp: String) async throws -> AuthResponse { try await request("auth/otp/verify", method: "POST", json: VerifyBody(phone: phone, otp: otp)) }
+    func me() async throws -> User { try await request("me") }
+    func putProfile(_ body: ProfileBody) async throws -> ProfileResponse { try await request("me/profile", method: "PUT", json: body) }
+    func patchProfile(_ body: ProfilePatch) async throws -> ProfileResponse { try await request("me/profile", method: "PATCH", json: body) }
+    func home() async throws -> Home { try await request("me/home") }
+    func policies() async throws -> [Policy] { try await request("me/policies") }
+    func addPolicy(_ body: AddPolicyBody) async throws -> AddPolicyResponse { try await request("me/policies", method: "POST", json: body) }
 
-@MainActor
-final class AppModel: ObservableObject {
-    @Published var isLoggedIn = false
-    @Published var tab: AppTab = .home
-    @Published var claims: [Claim]
-    @Published var documents: [ClaimDocument]
-    @Published var messages: [ChatMessage]
-    @Published var notice: String?
+    func addPolicyPdf(_ body: AddPolicyBody, bytes: Data, filename: String, mime: String) async throws -> AddPolicyResponse {
+        var form = Multipart()
+        form.field("insurer", body.insurer)
+        form.field("policyNumber", body.policyNumber)
+        form.field("sumInsured", String(body.sumInsured))
+        form.field("startDate", body.startDate)
+        if let room = body.roomRentLimit { form.field("roomRentLimit", String(room)) }
+        if let copay = body.coPayPercent { form.field("coPayPercent", String(copay)) }
+        form.file(filename: filename, mime: mime, bytes: bytes)
+        return try await request("me/policies", method: "POST", body: form.finalized(), contentType: form.contentType)
+    }
+    func analyze(_ id: String) async throws -> PolicyAnalysis { try await request("me/policies/\(id)/analyze", method: "POST") }
+    func saveBank(_ body: BankBody) async throws -> BankResponse { try await request("me/bank", method: "POST", json: body) }
+    func checkCoverage(_ body: CreateClaimBody) async throws -> CoverageResult { try await request("claims/check-coverage", method: "POST", json: body) }
+    func createClaim(_ body: CreateClaimBody) async throws -> Claim { try await request("claims", method: "POST", json: body) }
+    func preauth(_ id: String) async throws { let _: EmptyBody = try await request("claims/\(id)/preauth", method: "POST") }
+    func claims(status: String? = nil) async throws -> [Claim] { try await request("claims", query: ["status": status]) }
+    func checklist(_ id: String) async throws -> Checklist { try await request("claims/\(id)/checklist") }
+    func timeline(_ id: String) async throws -> Timeline { try await request("claims/\(id)/timeline") }
+    func settlement(_ id: String) async throws -> Settlement { try await request("claims/\(id)/settlement") }
+    func queries(status: String? = "OPEN") async throws -> [Query] { try await request("queries", query: ["status": status]) }
+    func explainQuery(_ id: String) async throws -> QueryExplain { try await request("queries/\(id)/explain") }
+    func chat(_ message: String, claimId: String?) async throws -> ChatReply { try await request("ai/chat", method: "POST", json: ChatBody(message: message, claimId: claimId)) }
+    func notifications() async throws -> NotificationsPage { try await request("notifications") }
+    func markRead(_ id: String) async throws { let _: EmptyBody = try await request("notifications/\(id)/read", method: "POST") }
+    func markAllRead() async throws { let _: EmptyBody = try await request("notifications/read-all", method: "POST") }
 
-    let userName = "Rajesh Sharma"
-    let email = "customer@claimsaathi.demo"
-    let phone = "+91 98765 43210"
-    let policy = PolicySummary()
-
-    init() {
-        claims = Self.seedClaims()
-        documents = Self.seedDocuments()
-        messages = [
-            ChatMessage(
-                isUser: false,
-                text: "Hi Rajesh. I read your Star Health policy. Sum insured is ₹5,00,000 and room rent is capped at ₹5,000 a day. Ask me about coverage, documents, or claim CLM-1042."
-            )
-        ]
+    func upload(claimId: String, bytes: Data, filename: String, mime: String, type: String?) async throws -> UploadResponse {
+        var form = Multipart()
+        form.file(filename: filename, mime: mime, bytes: bytes)
+        if let type { form.field("type", type) }
+        return try await request("claims/\(claimId)/documents", method: "POST", body: form.finalized(), contentType: form.contentType)
     }
 
-    var activeClaim: Claim? {
-        claims.first { $0.status != .settled } ?? claims.first
-    }
-
-    var missingDocumentCount: Int {
-        documents.filter { $0.status != .verified }.count
-    }
-
-    func login() {
-        isLoggedIn = true
-        tab = .home
-    }
-
-    func logout() {
-        isLoggedIn = false
-    }
-
-    func markUploaded(_ documentID: String) {
-        guard let index = documents.firstIndex(where: { $0.id == documentID }) else { return }
-        documents[index].status = .needsReview
-        documents[index].fileName = "Upload_\(documentID).pdf"
-        documents[index].note = "Uploaded in the demo. Waiting for a check."
-        notice = "\(documents[index].title) uploaded. Demo only."
-    }
-
-    func replyToQuery(claimID: String, message: String) {
-        guard let index = claims.firstIndex(where: { $0.id == claimID }) else { return }
-        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        claims[index].query = nil
-        claims[index].status = .underReview
-        if let stepIndex = claims[index].steps.firstIndex(where: { $0.state == .current }) {
-            claims[index].steps[stepIndex].state = .done
-            claims[index].steps[stepIndex] = TimelineStep(
-                title: "Query resolved",
-                detail: "You replied: \(trimmed)",
-                state: .done
-            )
-            let next = claims[index].steps.index(after: stepIndex)
-            if next < claims[index].steps.endIndex, claims[index].steps[next].state == .upcoming {
-                let upcoming = claims[index].steps[next]
-                claims[index].steps[next] = TimelineStep(title: upcoming.title, detail: upcoming.detail, state: .current)
-            }
-        }
-        notice = "Reply sent. A person reviews this only in the demo."
-    }
-
-    func advance(_ claimID: String) {
-        guard let index = claims.firstIndex(where: { $0.id == claimID }) else { return }
-        guard let current = claims[index].steps.firstIndex(where: { $0.state == .current }) else { return }
-        let currentStep = claims[index].steps[current]
-        claims[index].steps[current] = TimelineStep(title: currentStep.title, detail: currentStep.detail, state: .done)
-        let next = claims[index].steps.index(after: current)
-        if next < claims[index].steps.endIndex {
-            let upcoming = claims[index].steps[next]
-            claims[index].steps[next] = TimelineStep(title: upcoming.title, detail: "Updated in the demo.", state: .current)
-            claims[index].status = status(for: upcoming.title)
-        } else {
-            claims[index].status = .settled
-        }
-        notice = "Status moved forward. This is sample data."
-    }
-
-    func submitClaim(hospital: String, reason: String, amount: Int) {
-        let id = "CLM-\(Int.random(in: 2000...8999))"
-        let claim = Claim(
-            id: id,
-            hospital: hospital,
-            reason: reason,
-            amount: amount,
-            status: .submitted,
-            updated: "Just now",
-            steps: [
-                TimelineStep(title: "Submitted", detail: "Demo pre-auth created.", state: .current),
-                TimelineStep(title: "Docs verified", detail: "Waiting for documents.", state: .upcoming),
-                TimelineStep(title: "Under review", detail: "Not started.", state: .upcoming),
-                TimelineStep(title: "Approved", detail: "Not started.", state: .upcoming),
-                TimelineStep(title: "Settled", detail: "Not started.", state: .upcoming)
-            ],
-            query: nil,
-            settlement: nil
-        )
-        claims.insert(claim, at: 0)
-        notice = "\(id) submitted as a demo. No insurer received it."
-    }
-
-    func ask(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        messages.append(ChatMessage(isUser: true, text: trimmed))
-        messages.append(ChatMessage(isUser: false, text: answer(for: trimmed)))
-    }
-
-    private func answer(for text: String) -> String {
-        let query = text.lowercased()
-        if query.contains("room") {
-            return "Room rent is capped at ₹5,000 per day on policy \(policy.number). A higher room tariff is deducted in the settlement."
-        }
-        if query.contains("cover") || query.contains("policy") || query.contains("sum") || query.contains("wait") || query.contains("exclu") {
-            return "\(policy.insurer) \(policy.product), \(policy.number). Sum insured \(inr(policy.sumInsured)). Co-pay \(policy.coPay). \(policy.waitingPeriods.joined(separator: ". ")). Excluded: \(policy.exclusions.joined(separator: "; "))."
-        }
-        if query.contains("document") || query.contains("missing") || query.contains("upload") {
-            let pending = documents.filter { $0.status != .verified }
-            if pending.isEmpty {
-                return "Every required document is verified."
-            }
-            let lines = pending.map { "\($0.title): \($0.status.rawValue). \($0.note)" }
-            return lines.joined(separator: " ")
-        }
-        if query.contains("status") || query.contains("claim") || query.contains("track") {
-            guard let claim = activeClaim else { return "There is no active claim in this demo." }
-            return "\(claim.id) at \(claim.hospital) is \(claim.status.rawValue.lowercased()). Amount \(inr(claim.amount)). \(claim.query ?? "No open query.")"
-        }
-        if query.contains("deduct") || query.contains("settle") || query.contains("why") || query.contains("amount") {
-            guard let settlement = claims.first(where: { $0.settlement != nil })?.settlement else {
-                return "A settlement breakdown is not ready for the newest claim."
-            }
-            let reasons = settlement.lines.map { "\($0.title) \(inr($0.amount)): \($0.reason)" }.joined(separator: " ")
-            return "Sample bill \(inr(settlement.billAmount)). Deductions \(inr(settlement.deductions)). Approved \(inr(settlement.approvedAmount)). \(reasons) These figures are demo data."
-        }
-        return "I can explain this demo policy, the room-rent limit, missing documents, claim status, and why an amount was deducted. If something is not in the sample policy, check it with the insurer."
-    }
-
-    private func status(for stepTitle: String) -> ClaimStatus {
-        switch stepTitle {
-        case "Docs verified": return .docsVerified
-        case "Under review": return .underReview
-        case "Query", "Action required": return .actionRequired
-        case "Approved": return .approved
-        case "Settled": return .settled
-        default: return .submitted
-        }
-    }
-
-    private static func seedClaims() -> [Claim] {
-        [
-            Claim(
-                id: "CLM-1042",
-                hospital: "Apollo Hospitals, Ahmedabad",
-                reason: "Dengue admission",
-                amount: 220_000,
-                status: .actionRequired,
-                updated: "Today, 9:40 AM",
-                steps: [
-                    TimelineStep(title: "Submitted", detail: "Pre-auth sent on 28 Sep.", state: .done),
-                    TimelineStep(title: "Docs verified", detail: "Policy, bill, and ID checked.", state: .done),
-                    TimelineStep(title: "Under review", detail: "Ops reviewed the hospital bill.", state: .done),
-                    TimelineStep(title: "Query", detail: "Upload the payment receipt.", state: .current),
-                    TimelineStep(title: "Approved", detail: "Waiting on the receipt.", state: .upcoming),
-                    TimelineStep(title: "Settled", detail: "Not started.", state: .upcoming)
-                ],
-                query: "Upload the payment receipt so we can match the bill.",
-                settlement: Settlement(
-                    billAmount: 220_000,
-                    lines: [
-                        DeductionLine(title: "Non-payable items", amount: 18_000, reason: "Gloves, syringes, and toiletries are not payable."),
-                        DeductionLine(title: "Room rent above cap", amount: 15_000, reason: "Room was ₹8,000 a day. The policy cap is ₹5,000."),
-                        DeductionLine(title: "Co-pay 10%", amount: 7_000, reason: "Your policy shares 10% of the allowed amount.")
-                    ],
-                    approvedAmount: 180_000
-                )
-            ),
-            Claim(
-                id: "CLM-0988",
-                hospital: "Fortis Hospital, Mohali",
-                reason: "Day-care procedure",
-                amount: 110_000,
-                status: .settled,
-                updated: "12 Sep",
-                steps: [
-                    TimelineStep(title: "Submitted", detail: "Filed on 2 Sep.", state: .done),
-                    TimelineStep(title: "Docs verified", detail: "All documents matched.", state: .done),
-                    TimelineStep(title: "Approved", detail: "Approved on 10 Sep.", state: .done),
-                    TimelineStep(title: "Settled", detail: "Sample payout recorded.", state: .done)
-                ],
-                query: nil,
-                settlement: Settlement(
-                    billAmount: 110_000,
-                    lines: [
-                        DeductionLine(title: "Non-payable items", amount: 15_000, reason: "Registration and consumables were excluded.")
-                    ],
-                    approvedAmount: 95_000
-                )
-            )
-        ]
-    }
-
-    private static func seedDocuments() -> [ClaimDocument] {
-        [
-            ClaimDocument(id: "policy", title: "Policy PDF", fileName: "Star_Health_Policy.pdf", status: .verified, note: "Name and policy number match."),
-            ClaimDocument(id: "bill", title: "Hospital bill", fileName: "Apollo_Bill.pdf", status: .verified, note: "Amount matches the claim."),
-            ClaimDocument(id: "discharge", title: "Discharge summary", fileName: "Discharge_Summary.jpg", status: .needsReview, note: "The discharge date is hard to read."),
-            ClaimDocument(id: "receipt", title: "Payment receipt", fileName: nil, status: .missing, note: "Ops asked for this on claim CLM-1042."),
-            ClaimDocument(id: "id", title: "Photo ID", fileName: "Aadhaar.pdf", status: .verified, note: "Name matches the policyholder.")
-        ]
+    func respond(queryId: String, text: String, bytes: Data?, filename: String?, mime: String?, type: String?) async throws -> Query {
+        var form = Multipart()
+        form.field("response", text)
+        if let type { form.field("type", type) }
+        if let bytes, let filename, let mime { form.file(filename: filename, mime: mime, bytes: bytes) }
+        return try await request("queries/\(queryId)/respond", method: "POST", body: form.finalized(), contentType: form.contentType)
     }
 }

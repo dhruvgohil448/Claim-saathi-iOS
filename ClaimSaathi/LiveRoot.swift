@@ -1,0 +1,854 @@
+import SwiftUI
+import PhotosUI
+
+@Observable
+@MainActor
+final class AppState {
+    var user: User?
+    var home: Home?
+    var error: String?
+    var busy = false
+    var authed = TokenStore.token != nil
+    var lastUpload: UploadResponse?
+
+    func logout() {
+        TokenStore.token = nil
+        authed = false
+        user = nil
+        home = nil
+    }
+
+    func run(_ work: @escaping () async throws -> Void) {
+        busy = true
+        error = nil
+        Task {
+            do { try await work() }
+            catch { self.error = error.localizedDescription }
+            busy = false
+        }
+    }
+}
+
+struct RootView: View {
+    @State private var app = AppState()
+
+    var body: some View {
+        Group {
+            if app.authed { MainTabs().environment(app) }
+            else { LoginFlow().environment(app) }
+        }
+        .tint(Color.csCyan)
+        .animation(.easeInOut(duration: 0.35), value: app.authed)
+        .task {
+            API.shared.onUnauthorized = { Task { @MainActor in app.logout() } }
+            guard TokenStore.token != nil else { return }
+            do { app.user = try await API.shared.me(); app.authed = true }
+            catch { app.logout() }
+        }
+    }
+}
+
+private struct LoginFlow: View {
+    @Environment(AppState.self) private var app
+    @State private var phone = ""
+    @State private var otp = ""
+    @State private var stage = 0
+    @State private var name = ""
+    @State private var email = ""
+    @State private var dob = "1990-01-01"
+    @State private var gender = "male"
+    @State private var city = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                NavyHero(heroTitle, heroSubtitle) { if stage > 0 { StepDots(current: stage, total: 3) } }
+                    .padding(.horizontal, -16)
+                content
+                    .padding(.horizontal, 4)
+                    .transition(.asymmetric(insertion: .move(edge: .trailing).combined(with: .opacity), removal: .move(edge: .leading).combined(with: .opacity)))
+                if let error = app.error { Text(error).foregroundStyle(Color.csError).font(.footnote) }
+            }
+            .padding(16)
+            .animation(.spring(duration: 0.4), value: stage)
+        }
+        .background(Color.csBackground.ignoresSafeArea())
+    }
+
+    private var heroTitle: String {
+        stage == 0 ? "Claim Saathi" : stage == 1 ? "Verify OTP" : "Almost there"
+    }
+    private var heroSubtitle: String {
+        stage == 0 ? "Your AI health-insurance companion" : stage == 1 ? "Sent to \(phone). Demo code 111000." : "Complete your profile to start a claim"
+    }
+
+    @ViewBuilder private var content: some View {
+        switch stage {
+        case 0:
+            CSCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Login with mobile").font(.headline).foregroundStyle(Color.csNavy)
+                    Text("Use the number on your policy. No SMS is sent in demo.").font(.footnote).foregroundStyle(Color.csSecondary)
+                    FieldBox(title: "10-digit phone", text: $phone, keyboard: .numberPad)
+                    PrimaryButton(title: "Get OTP", busy: app.busy, enabled: phone.filter(\.isNumber).count == 10) {
+                        app.run {
+                            _ = try await API.shared.sendOtp(String(phone.filter(\.isNumber).prefix(10)))
+                            stage = 1
+                        }
+                    }
+                    Text("Demo OTP is always 111000").font(.caption).foregroundStyle(Color.csSecondary)
+                }
+            }
+        case 1:
+            CSCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Enter the 6-digit code").font(.headline).foregroundStyle(Color.csNavy)
+                    OtpBoxes(value: $otp)
+                    PrimaryButton(title: "Verify & continue", busy: app.busy, enabled: otp.count == 6) {
+                        app.run {
+                            let res = try await API.shared.verifyOtp(String(phone.filter(\.isNumber).prefix(10)), otp)
+                            TokenStore.token = res.token
+                            app.user = res.user
+                            if res.needsProfile == true { stage = 2 } else { app.authed = true }
+                        }
+                    }
+                    GhostButton(title: "Change number") { stage = 0 }
+                }
+            }
+        default:
+            CSCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    FieldBox(title: "Full name", text: $name)
+                    FieldBox(title: "Email", text: $email, keyboard: .emailAddress)
+                    FieldBox(title: "Date of birth yyyy-MM-dd", text: $dob)
+                    Picker("Gender", selection: $gender) {
+                        Text("Male").tag("male"); Text("Female").tag("female"); Text("Other").tag("other")
+                    }.pickerStyle(.segmented)
+                    FieldBox(title: "City", text: $city)
+                    PrimaryButton(title: "Save & enter app", busy: app.busy, enabled: name.count >= 2 && email.contains("@")) {
+                        app.run {
+                            let res = try await API.shared.putProfile(ProfileBody(name: name, email: email, dob: dob, gender: gender, city: city.isEmpty ? nil : city))
+                            TokenStore.token = res.token
+                            app.user = res.user
+                            app.authed = true
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct MainTabs: View {
+    @Environment(AppState.self) private var app
+    @State private var tab = 0
+    var body: some View {
+        TabView(selection: $tab) {
+            HomeTab().tag(0).tabItem { Label("Home", systemImage: "house.fill") }
+            ClaimsTab().tag(1).tabItem { Label("Claims", systemImage: "list.bullet.rectangle") }
+            AssistantTab().tag(2).tabItem { Label("AI", systemImage: "sparkles") }
+            AlertsTab().tag(3).tabItem { Label("Alerts", systemImage: "bell.fill") }.badge(app.home?.counts?.unreadNotifications ?? 0)
+            ProfileTab().tag(4).tabItem { Label("Profile", systemImage: "person.fill") }
+        }
+    }
+}
+
+private struct HomeTab: View {
+    @Environment(AppState.self) private var app
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Good to see you").font(.footnote).foregroundStyle(.white.opacity(0.75))
+                        Text(app.home?.user.name ?? app.user?.name ?? "Claim Saathi")
+                            .font(.system(size: 26, weight: .bold)).foregroundStyle(.white)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        HStack(alignment: .top, spacing: 8) {
+                            stat("Paid out", inr(app.home?.paidOut))
+                            stat("Open claims", "\(app.home?.counts?.activeClaims ?? 0)")
+                            stat("Queries", "\(app.home?.counts?.openQueries ?? 0)")
+                        }
+                    }
+                    .padding(20)
+                    .safeAreaPadding(.top)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(LinearGradient(colors: [Color(red: 0, green: 0.23, blue: 0.55), Color.csNavy], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea(edges: .top))
+
+                    if let policy = app.home?.activePolicy {
+                        NavigationLink { PolicyReaderView(policyId: policy.id) } label: {
+                            CSCard {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("ACTIVE POLICY").font(.caption.bold()).foregroundStyle(Color.csCyan)
+                                    Text(policy.insurer ?? "").font(.headline).foregroundStyle(Color.csNavy)
+                                    Text(policy.policyNumber ?? "").foregroundStyle(Color.csSecondary)
+                                    HStack(alignment: .top) {
+                                        Text("\(inr(policy.sumInsured)) cover").frame(maxWidth: .infinity, alignment: .leading)
+                                        Text("\(inr(policy.roomRentLimit))/day").frame(maxWidth: .infinity, alignment: .center)
+                                        Text("\(Int(policy.coPayPercent ?? 0))% copay").frame(maxWidth: .infinity, alignment: .trailing)
+                                    }
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.csNavy)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.75)
+                                }
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                    if let claim = app.home?.currentClaim {
+                        NavigationLink { TrackingView(claimId: claim.id) } label: {
+                            CSCard {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack { Text(claim.claimNumber ?? "").foregroundStyle(Color.csCyan).font(.headline); Spacer(); StatusBadge(title: claim.status?.rawValue ?? "", tint: .csWarning) }
+                                    Text(claim.hospital ?? "").foregroundStyle(Color.csNavy)
+                                    let done = claim.checklist?.verified?.count ?? 0
+                                    let total = claim.checklist?.required?.count ?? 0
+                                    if total > 0 { ProgressView(value: Double(done), total: Double(total)).tint(Color.csCyan) }
+                                }
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                    HStack(alignment: .top, spacing: 8) {
+                        NavigationLink { StartClaimView() } label: { ActionTile(icon: "plus.circle.fill", title: "Start claim", subtitle: "File or pre-auth") }
+                        NavigationLink { AddPolicyView() } label: { ActionTile(icon: "doc.text.fill", title: "Link policy", subtitle: "Add cover") }
+                        NavigationLink { BankView() } label: { ActionTile(icon: "building.columns.fill", title: "Bank", subtitle: "Payout account") }
+                    }
+                    Text("Needs you").font(.title3.bold()).foregroundStyle(Color.csNavy)
+                    ForEach(app.home?.pendingActions ?? [], id: \.title) { action in
+                        actionLink(action)
+                    }
+                    if app.home?.pendingActions?.isEmpty != false {
+                        CSCard { Text("You’re all caught up.").foregroundStyle(Color.csSecondary) }
+                    }
+                    if let error = app.error { Text(error).font(.footnote).foregroundStyle(Color.csError) }
+                }
+            }
+            .background(Color.csBackground.ignoresSafeArea())
+            .toolbar(.hidden, for: .navigationBar)
+            .task { while !Task.isCancelled { if let home = try? await API.shared.home() { app.home = home }; try? await Task.sleep(for: .seconds(5)) } }
+        }
+    }
+
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading) {
+            Text(label).font(.caption).foregroundStyle(.white.opacity(0.7))
+            Text(value).font(.headline).foregroundStyle(.white)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private func actionLink(_ action: PendingAction) -> some View {
+        let card = CSCard {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(pretty(action.kind)).font(.caption.bold()).foregroundStyle(Color.csCyan)
+                Text(action.title).foregroundStyle(Color.csNavy).font(.headline).lineLimit(3)
+            }
+        }
+        switch action.kind {
+        case "QUERY":
+            if let id = action.queryId { NavigationLink { QueryDetailView(queryId: id) } label: { card }.buttonStyle(.plain) }
+        case "MISSING_DOC", "REUPLOAD_DOC":
+            if let id = action.claimId { NavigationLink { ChecklistView(claimId: id) } label: { card }.buttonStyle(.plain) }
+        case "ADD_BANK":
+            NavigationLink { BankView() } label: { card }.buttonStyle(.plain)
+        case "COMPLETE_PROFILE":
+            NavigationLink { ProfileEditView() } label: { card }.buttonStyle(.plain)
+        default:
+            NavigationLink { AddPolicyView() } label: { card }.buttonStyle(.plain)
+        }
+    }
+}
+
+private struct AddPolicyView: View {
+    @Environment(AppState.self) private var app
+    @State private var insurer = ""
+    @State private var number = ""
+    @State private var sum = ""
+    @State private var start = "2026-01-01"
+    @State private var room = "5000"
+    @State private var copay = "10"
+    @State private var savedId: String?
+    @State private var fileName: String?
+    @State private var fileBytes: Data?
+    @State private var fileMime = "application/pdf"
+    @State private var showFiles = false
+    @State private var extracted = false
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Fill the details and attach the policy PDF. The file is stored and shown on the dashboard.")
+                    .font(.footnote).foregroundStyle(Color.csSecondary)
+                FieldBox(title: "Insurer", text: $insurer)
+                FieldBox(title: "Policy number", text: $number)
+                FieldBox(title: "Sum insured", text: $sum, keyboard: .numberPad)
+                FieldBox(title: "Start yyyy-MM-dd", text: $start)
+                FieldBox(title: "Room rent / day", text: $room, keyboard: .numberPad)
+                FieldBox(title: "Co-pay %", text: $copay, keyboard: .numberPad)
+                GhostButton(title: fileName == nil ? "Upload policy document" : "Change document") { showFiles = true }
+                if let fileName { Text("Attached: \(fileName)").font(.footnote).foregroundStyle(Color.csSuccess) }
+                PrimaryButton(title: "Save policy", busy: app.busy, enabled: insurer.count >= 2 && number.count >= 3) {
+                    app.run {
+                        let body = AddPolicyBody(insurer: insurer, policyNumber: number, sumInsured: Int(sum) ?? 0, startDate: start, roomRentLimit: Int(room), coPayPercent: Double(copay))
+                        let saved: AddPolicyResponse
+                        if let fileBytes, let fileName {
+                            saved = try await API.shared.addPolicyPdf(body, bytes: fileBytes, filename: fileName, mime: fileMime)
+                        } else {
+                            saved = try await API.shared.addPolicy(body)
+                        }
+                        savedId = saved.policy.id
+                        extracted = saved.extractedFromPdf == true
+                    }
+                }
+                if extracted { Text("Rules were read from the PDF.").font(.footnote).foregroundStyle(Color.csSuccess) }
+                if let savedId { NavigationLink("Read this policy") { PolicyReaderView(policyId: savedId) } }
+                if let error = app.error { Text(error).foregroundStyle(Color.csError) }
+            }.padding(16)
+        }
+        .background(Color.csBackground)
+        .navigationTitle("Link a policy")
+        .navigationBarTitleDisplayMode(.inline)
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.pdf, .image]) { result in
+            guard let url = try? result.get(), url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            fileBytes = try? Data(contentsOf: url)
+            fileName = url.lastPathComponent
+            fileMime = url.pathExtension.lowercased() == "pdf" ? "application/pdf" : "image/jpeg"
+        }
+    }
+}
+
+private struct PolicyReaderView: View {
+    let policyId: String
+    @State private var analysis: PolicyAnalysis?
+    @State private var error: String?
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                if let analysis {
+                    CSCard { Text(analysis.whatIsCovered ?? "").foregroundStyle(Color.csNavy) }
+                    ForEach(analysis.coverage ?? [], id: \.item) { row in
+                        CSCard {
+                            VStack(alignment: .leading) {
+                                Text(row.item ?? "").font(.headline).foregroundStyle(Color.csNavy)
+                                Text(row.detail ?? "").font(.footnote).foregroundStyle(Color.csSecondary)
+                            }
+                        }
+                    }
+                    ForEach(analysis.waitingPeriods ?? [], id: \.name) { wait in
+                        StatusBadge(title: wait.status ?? wait.name ?? "", tint: wait.active == true ? .csWarning : .csSuccess)
+                    }
+                }
+                if let error { Text(error).foregroundStyle(Color.csError) }
+            }.padding(16)
+        }
+        .background(Color.csBackground)
+        .navigationTitle(analysis?.policyNumber ?? "Policy")
+        .task { do { analysis = try await API.shared.analyze(policyId) } catch { self.error = error.localizedDescription } }
+    }
+}
+
+private struct StartClaimView: View {
+    @Environment(AppState.self) private var app
+    @State private var step = 0
+    @State private var policies: [Policy] = []
+    @State private var policyId = ""
+    @State private var cashless = false
+    @State private var hospital = ""
+    @State private var city = ""
+    @State private var reason = ""
+    @State private var patient = ""
+    @State private var amount = ""
+    @State private var otp = "111000"
+    @State private var warnings: [String] = []
+    @State private var createdId: String?
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                StepDots(current: step, total: 3).padding(.bottom, 4)
+                switch step {
+                case 0:
+                    Text("How should we file this?").font(.title3.bold()).foregroundStyle(Color.csNavy)
+                    Picker("Type", selection: $cashless) { Text("Reimbursement").tag(false); Text("Pre-auth").tag(true) }.pickerStyle(.segmented)
+                    ForEach(policies) { policy in
+                        Button { policyId = policy.id } label: {
+                            CSCard {
+                                Text(policy.policyNumber ?? "").font(.headline).foregroundStyle(policyId == policy.id ? Color.csCyan : Color.csNavy)
+                                Text(policy.insurer ?? "").font(.footnote).foregroundStyle(Color.csSecondary)
+                            }
+                        }.buttonStyle(.plain)
+                    }
+                    PrimaryButton(title: "Next", enabled: !policyId.isEmpty) { withAnimation { step = 1 } }
+                case 1:
+                    Text("Hospital & patient").font(.title3.bold()).foregroundStyle(Color.csNavy)
+                    FieldBox(title: "Hospital", text: $hospital)
+                    FieldBox(title: "City", text: $city)
+                    FieldBox(title: "Reason", text: $reason)
+                    FieldBox(title: "Patient", text: $patient)
+                    FieldBox(title: cashless ? "Estimated amount" : "Bill amount", text: $amount, keyboard: .numberPad)
+                    PrimaryButton(title: "Review", enabled: hospital.count >= 2 && reason.count >= 2) { withAnimation { step = 2 } }
+                    GhostButton(title: "Back") { withAnimation { step = 0 } }
+                default:
+                    Text("Confirm & consent").font(.title3.bold()).foregroundStyle(Color.csNavy)
+                    CSCard {
+                        VStack(spacing: 8) {
+                            row("Type", cashless ? "Pre-auth" : "Reimbursement")
+                            row("Hospital", hospital)
+                            row("Patient", patient)
+                            row("Amount", inr(Int(amount)))
+                        }
+                    }
+                    ForEach(warnings, id: \.self) { Text($0).foregroundStyle(Color.csWarning) }
+                    OtpBoxes(value: $otp)
+                    GhostButton(title: "Check coverage") {
+                        app.run { warnings = try await API.shared.checkCoverage(claimBody()).warnings ?? [] }
+                    }
+                    PrimaryButton(title: "Submit claim", busy: app.busy, enabled: otp.count == 6) {
+                        app.run {
+                            let claim = try await API.shared.createClaim(claimBody())
+                            if cashless { try? await API.shared.preauth(claim.id) }
+                            createdId = claim.id
+                        }
+                    }
+                    if let createdId { NavigationLink("Upload documents") { ChecklistView(claimId: createdId) } }
+                    GhostButton(title: "Edit details") { withAnimation { step = 1 } }
+                }
+                if let error = app.error { Text(error).foregroundStyle(Color.csError) }
+            }.padding(16)
+        }
+        .background(Color.csBackground)
+        .navigationTitle("Start a claim")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            policies = (try? await API.shared.policies()) ?? []
+            policyId = policies.first?.id ?? ""
+            if patient.isEmpty { patient = app.user?.name ?? "" }
+        }
+    }
+
+    private func row(_ k: String, _ v: String) -> some View {
+        HStack { Text(k).foregroundStyle(Color.csSecondary); Spacer(); Text(v).foregroundStyle(Color.csNavy).bold() }
+    }
+    private func claimBody() -> CreateClaimBody {
+        CreateClaimBody(policyId: policyId, type: cashless ? "PREAUTH" : "REIMBURSEMENT", hospital: hospital, hospitalCity: city.isEmpty ? nil : city, reason: reason, billAmount: cashless ? nil : Int(amount), estimatedAmount: cashless ? Int(amount) : nil, patientName: patient, consentOtp: otp)
+    }
+}
+
+private struct ChecklistView: View {
+    @Environment(AppState.self) private var app
+    let claimId: String
+    @State private var list: Checklist?
+    @State private var picking: DocumentType?
+    @State private var photo: PhotosPickerItem?
+    @State private var showChooser = false
+    @State private var showPhotos = false
+    @State private var showFiles = false
+    var body: some View {
+        ZStack {
+            List {
+                if let progress = list?.progress {
+                    ProgressView(value: Double(progress.verified ?? 0), total: Double(max(progress.required ?? 1, 1))).tint(Color.csCyan)
+                }
+                ForEach(list?.warnings ?? [], id: \.self) { Text($0).foregroundStyle(Color.csWarning) }
+                ForEach(list?.items ?? []) { item in
+                    Button { picking = item.type; showChooser = true } label: {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(item.label ?? "").foregroundStyle(Color.csNavy).bold()
+                                if let file = item.fileName { Text(file).font(.caption).foregroundStyle(Color.csSecondary) }
+                            }
+                            Spacer()
+                            StatusBadge(title: item.status?.rawValue ?? "", tint: item.status == .verified ? .csSuccess : item.status == .rejected ? .csError : .csSecondary)
+                        }
+                    }
+                }
+                if let upload = app.lastUpload { NavigationLink("See validation") { ValidationView(upload: upload) } }
+                if let error = app.error { Text(error).foregroundStyle(Color.csError) }
+            }
+            if app.busy {
+                Color.csNavy.opacity(0.35).ignoresSafeArea()
+                CSCard {
+                    VStack(spacing: 12) {
+                        ProgressView()
+                        Text("Validating document…").bold().foregroundStyle(Color.csNavy)
+                    }.frame(maxWidth: .infinity)
+                }.padding(40)
+            }
+        }
+        .navigationTitle("Documents")
+        .confirmationDialog("Upload", isPresented: $showChooser) {
+            Button("Photos") { showPhotos = true }
+            Button("PDF or image") { showFiles = true }
+        }
+        .photosPicker(isPresented: $showPhotos, selection: $photo, matching: .images)
+        .onChange(of: photo) { _, item in
+            guard let item, let type = picking else { return }
+            photo = nil
+            app.run {
+                guard let data = try await item.loadTransferable(type: Data.self) else { return }
+                app.lastUpload = try await API.shared.upload(claimId: claimId, bytes: data, filename: "photo.jpg", mime: "image/jpeg", type: type.rawValue)
+                list = try await API.shared.checklist(claimId)
+            }
+        }
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.pdf, .image]) { result in
+            guard let url = try? result.get(), let type = picking else { return }
+            guard url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            guard let data = try? Data(contentsOf: url) else { return }
+            let pdf = url.pathExtension.lowercased() == "pdf"
+            app.run {
+                app.lastUpload = try await API.shared.upload(claimId: claimId, bytes: data, filename: url.lastPathComponent, mime: pdf ? "application/pdf" : "image/jpeg", type: type.rawValue)
+                list = try await API.shared.checklist(claimId)
+            }
+        }
+        .task { list = try? await API.shared.checklist(claimId) }
+    }
+}
+
+private struct ValidationView: View {
+    let upload: UploadResponse
+    var body: some View {
+        List {
+            Text(upload.validation?.summary ?? pretty(upload.validation?.appStatus?.rawValue ?? "Validation")).font(.headline)
+            ForEach(upload.validation?.checks ?? []) { check in
+                HStack(alignment: .top) {
+                    Image(systemName: check.passed == true ? "checkmark.circle.fill" : check.passed == false ? "xmark.circle.fill" : "minus.circle")
+                        .foregroundStyle(check.passed == true ? Color.csSuccess : check.passed == false ? Color.csError : Color.csSecondary)
+                    VStack(alignment: .leading) {
+                        Text(check.label ?? "").bold()
+                        Text(check.detail ?? "").font(.footnote).foregroundStyle(Color.csSecondary)
+                    }
+                }
+            }
+            ForEach(upload.validation?.warnings ?? [], id: \.self) { Text($0).foregroundStyle(Color.csWarning) }
+        }.navigationTitle("Validation")
+    }
+}
+
+private struct ClaimsTab: View {
+    @State private var claims: [Claim] = []
+    @State private var filter: String?
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            List {
+                Picker("Filter", selection: $filter) {
+                    Text("All").tag(String?.none)
+                    Text("Action").tag(String?.some("QUERY_RAISED,DOCS_PENDING"))
+                    Text("Settled").tag(String?.some("SETTLED"))
+                }.pickerStyle(.segmented).listRowBackground(Color.clear)
+                ForEach(claims) { claim in
+                    NavigationLink { TrackingView(claimId: claim.id) } label: {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack { Text(claim.claimNumber ?? "").foregroundStyle(Color.csCyan).bold(); Spacer(); StatusBadge(title: claim.status?.rawValue ?? "", tint: .csWarning) }
+                            Text(claim.hospital ?? "")
+                            Text(inr(claim.billAmount ?? claim.estimatedAmount)).font(.headline).foregroundStyle(Color.csNavy)
+                        }
+                    }
+                }
+                if let error { Text(error).foregroundStyle(Color.csError) }
+            }
+            .navigationTitle("Claims")
+            .task(id: filter) { do { claims = try await API.shared.claims(status: filter) } catch { self.error = error.localizedDescription } }
+        }
+    }
+}
+
+private struct TrackingView: View {
+    let claimId: String
+    @State private var timeline: Timeline?
+    @State private var error: String?
+    var body: some View {
+        List {
+            if let update = timeline?.latestOpsUpdate?.message {
+                CSCard {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("LATEST UPDATE").font(.caption.bold()).foregroundStyle(Color.csCyan)
+                        Text(update).foregroundStyle(Color.csNavy)
+                    }
+                }.listRowBackground(Color.clear)
+            }
+            ForEach(timeline?.steps ?? []) { step in
+                HStack(alignment: .top, spacing: 12) {
+                    Circle()
+                        .fill(step.state == .current ? Color.csCyan : step.state == .done ? Color.csSuccess : step.state == .failed ? Color.csError : Color.csPale)
+                        .frame(width: 14, height: 14)
+                        .scaleEffect(step.state == .current ? 1.2 : 1)
+                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: step.state == .current)
+                    VStack(alignment: .leading) {
+                        Text(step.label ?? "").font(.headline).foregroundStyle(Color.csNavy)
+                        if let note = step.note { Text(note).font(.footnote).foregroundStyle(Color.csSecondary) }
+                    }
+                }
+            }
+            NavigationLink("Queries") { QueriesView() }
+            NavigationLink("Upload documents") { ChecklistView(claimId: claimId) }
+            NavigationLink("Settlement") { SettlementView(claimId: claimId) }
+            if let error { Text(error).foregroundStyle(Color.csError) }
+        }
+        .navigationTitle(timeline?.claimNumber ?? "Claim")
+        .task { while !Task.isCancelled { do { timeline = try await API.shared.timeline(claimId) } catch { self.error = error.localizedDescription }; try? await Task.sleep(for: .seconds(5)) } }
+        .toolbar { ToolbarItem(placement: .topBarTrailing) { Link("PDF", destination: API.shared.summaryPdfURL(claimId)) } }
+    }
+}
+
+private struct QueriesView: View {
+    @State private var items: [Query] = []
+    var body: some View {
+        List(items) { query in
+            NavigationLink { QueryDetailView(queryId: query.id) } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(query.claim?.claimNumber ?? "Query").foregroundStyle(Color.csCyan).bold()
+                    Text(query.message ?? "")
+                }
+            }
+        }
+        .navigationTitle("Queries")
+        .task { items = (try? await API.shared.queries()) ?? [] }
+    }
+}
+
+private struct QueryDetailView: View {
+    @Environment(AppState.self) private var app
+    let queryId: String
+    @State private var explain = ""
+    @State private var reply = ""
+    @State private var status = ""
+    @State private var checks: [ValidationCheck] = []
+    @State private var showFiles = false
+    var body: some View {
+        Form {
+            if !explain.isEmpty { Text(explain) }
+            FieldBox(title: "Reply", text: $reply)
+            PrimaryButton(title: "Send reply", busy: app.busy) {
+                app.run {
+                    let result = try await API.shared.respond(queryId: queryId, text: reply.isEmpty ? "Replied from the app" : reply, bytes: nil, filename: nil, mime: nil, type: nil)
+                    status = result.status == .CLOSED ? "Query resolved ✓" : "Sent to the claims team"
+                    checks = result.document?.validation?.checks ?? []
+                }
+            }
+            GhostButton(title: "Attach a file") { showFiles = true }
+            if !status.isEmpty { Text(status).foregroundStyle(Color.csSuccess) }
+            ForEach(checks) { Text("\($0.label ?? ""): \($0.detail ?? "")").font(.footnote) }
+            if let error = app.error { Text(error).foregroundStyle(Color.csError) }
+        }
+        .navigationTitle("Query")
+        .task { explain = (try? await API.shared.explainQuery(queryId).explanation) ?? "" }
+        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.pdf, .image]) { result in
+            guard let url = try? result.get(), url.startAccessingSecurityScopedResource() else { return }
+            defer { url.stopAccessingSecurityScopedResource() }
+            guard let data = try? Data(contentsOf: url) else { return }
+            app.run {
+                let answered = try await API.shared.respond(queryId: queryId, text: reply.isEmpty ? "Uploaded the requested file" : reply, bytes: data, filename: url.lastPathComponent, mime: "application/pdf", type: nil)
+                status = answered.status == .CLOSED ? "Query resolved ✓" : "Sent to the claims team"
+                checks = answered.document?.validation?.checks ?? []
+            }
+        }
+    }
+}
+
+private struct AssistantTab: View {
+    @Environment(AppState.self) private var app
+    @State private var messages: [(Bool, String)] = []
+    @State private var input = ""
+    @State private var followUps: [String] = []
+    private let starters = ["Where is my claim?", "Which documents are still pending?", "What is my room rent limit?", "How much will I get?", "What is not covered?"]
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Ask Saathi").font(.title2.bold()).foregroundStyle(.white)
+                    Text("Grounded in your policy and claim.").font(.footnote).foregroundStyle(.white.opacity(0.75))
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.csNavy)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if messages.isEmpty {
+                            ForEach(starters, id: \.self) { prompt in
+                                Button { send(prompt) } label: {
+                                    CSCard { Text(prompt).foregroundStyle(Color.csNavy) }
+                                }.buttonStyle(.plain)
+                            }
+                        }
+                        ForEach(Array(messages.enumerated()), id: \.offset) { _, message in
+                            Text(message.1)
+                                .padding(14)
+                                .foregroundStyle(message.0 ? .white : Color.csNavy)
+                                .background(message.0 ? Color.csNavy : .white)
+                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                .frame(maxWidth: .infinity, alignment: message.0 ? .trailing : .leading)
+                        }
+                        ForEach(followUps, id: \.self) { prompt in
+                            Button(prompt) { send(prompt) }.font(.footnote).foregroundStyle(Color.csCyan)
+                        }
+                    }.padding(16)
+                }
+                VStack(spacing: 8) {
+                    TextField("Message", text: $input).padding(12).background(Color.csBackground).clipShape(RoundedRectangle(cornerRadius: 14))
+                    PrimaryButton(title: "Send", busy: app.busy, enabled: !input.trimmingCharacters(in: .whitespaces).isEmpty) { send(input) }
+                }.padding(16).background(Color.white)
+            }
+            .background(Color.csBackground)
+            .toolbar(.hidden, for: .navigationBar)
+        }
+    }
+    private func send(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        messages.append((true, trimmed)); input = ""
+        let claimId = app.home?.currentClaim?.id
+        app.run {
+            let reply = try await API.shared.chat(trimmed, claimId: claimId)
+            messages.append((false, reply.answer))
+            followUps = reply.followUps ?? []
+        }
+    }
+}
+
+private struct AlertsTab: View {
+    @Environment(AppState.self) private var app
+    @State private var notes: [AppNotification] = []
+    var body: some View {
+        NavigationStack {
+            List {
+                Button("Mark all read") { app.run { try await API.shared.markAllRead(); notes = try await API.shared.notifications().items } }
+                ForEach(notes) { note in
+                    Button {
+                        app.run {
+                            try await API.shared.markRead(note.id)
+                            notes = try await API.shared.notifications().items
+                        }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(note.title ?? "").font(.headline).foregroundStyle(Color.csNavy)
+                            Text(note.body ?? "").font(.footnote).foregroundStyle(Color.csSecondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Alerts")
+            .task { while !Task.isCancelled { notes = (try? await API.shared.notifications().items) ?? []; try? await Task.sleep(for: .seconds(5)) } }
+        }
+    }
+}
+
+private struct ProfileEditView: View {
+    @Environment(AppState.self) private var app
+    @State private var name = ""
+    @State private var city = ""
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                CSCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        FieldBox(title: "Name", text: $name)
+                        FieldBox(title: "City", text: $city)
+                        PrimaryButton(title: "Save profile", busy: app.busy) {
+                            app.run {
+                                let res = try await API.shared.patchProfile(ProfilePatch(name: name, city: city))
+                                TokenStore.token = res.token
+                                app.user = res.user
+                            }
+                        }
+                    }
+                }
+                if let error = app.error { Text(error).foregroundStyle(Color.csError) }
+            }.padding(16)
+        }
+        .background(Color.csBackground)
+        .navigationTitle("Profile")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear { name = app.user?.name ?? ""; city = app.user?.city ?? "" }
+    }
+}
+
+private struct ProfileTab: View {
+    @Environment(AppState.self) private var app
+    @State private var name = ""
+    @State private var city = ""
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    NavyHero(app.user?.name ?? "Profile", app.user?.phone ?? app.user?.email ?? "")
+                    CSCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            FieldBox(title: "Name", text: $name)
+                            FieldBox(title: "City", text: $city)
+                            PrimaryButton(title: "Save profile", busy: app.busy) {
+                                app.run {
+                                    let res = try await API.shared.patchProfile(ProfilePatch(name: name, city: city))
+                                    TokenStore.token = res.token
+                                    app.user = res.user
+                                }
+                            }
+                        }
+                    }
+                    NavigationLink { BankView() } label: { ActionTile(icon: "building.columns.fill", title: "Bank account", subtitle: "For settlement payouts") }
+                    GhostButton(title: "Log out") { app.logout() }
+                    if let error = app.error { Text(error).foregroundStyle(Color.csError) }
+                }.padding(16)
+            }
+            .background(Color.csBackground)
+            .toolbar(.hidden, for: .navigationBar)
+            .onAppear { name = app.user?.name ?? ""; city = app.user?.city ?? "" }
+        }
+    }
+}
+
+private struct BankView: View {
+    @Environment(AppState.self) private var app
+    @State private var holder = ""
+    @State private var account = ""
+    @State private var ifsc = ""
+    @State private var bank = ""
+    @State private var saved = false
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                FieldBox(title: "Account name", text: $holder)
+                FieldBox(title: "Account number", text: $account, keyboard: .numberPad)
+                FieldBox(title: "IFSC", text: $ifsc)
+                    .onChange(of: ifsc) { _, next in ifsc = next.uppercased() }
+                FieldBox(title: "Bank", text: $bank)
+                PrimaryButton(title: "Save with OTP 111000", busy: app.busy) {
+                    app.run {
+                        _ = try await API.shared.saveBank(BankBody(accountName: holder, accountNumber: account, ifsc: ifsc, bankName: bank.isEmpty ? nil : bank, otp: "111000"))
+                        saved = true
+                    }
+                }
+                if saved { Text("Saved. The number is stored masked.").foregroundStyle(Color.csSuccess) }
+                if let error = app.error { Text(error).foregroundStyle(Color.csError) }
+            }.padding(16)
+        }
+        .background(Color.csBackground)
+        .navigationTitle("Bank")
+        .onAppear { if holder.isEmpty { holder = app.user?.name ?? "" } }
+    }
+}
+
+private struct SettlementView: View {
+    let claimId: String
+    @State private var settlement: Settlement?
+    @State private var error: String?
+    var body: some View {
+        List {
+            if settlement?.preview == true { Text("Estimate. Final amount after approval.").foregroundStyle(Color.csWarning) }
+            if settlement?.isDemo == true { StatusBadge(title: "Demo settlement", tint: .csWarning) }
+            Text("Bill \(inr(settlement?.billAmount))")
+            ForEach(settlement?.deductions ?? [], id: \.label) { line in
+                VStack(alignment: .leading) {
+                    Text("\(line.label ?? "")  − \(inr(line.amount))")
+                    if let reason = line.reason { Text(reason).font(.footnote).foregroundStyle(Color.csSecondary) }
+                }
+            }
+            Text("Approved \(inr(settlement?.approvedAmount))").font(.title2.bold()).foregroundStyle(Color.csSuccess)
+            if let utr = settlement?.utr { Text("UTR \(utr)") }
+            Link("Summary PDF", destination: API.shared.summaryPdfURL(claimId))
+            if let error { Text(error).foregroundStyle(Color.csError) }
+        }
+        .navigationTitle("Settlement")
+        .task { do { settlement = try await API.shared.settlement(claimId) } catch { self.error = error.localizedDescription } }
+    }
+}

@@ -174,7 +174,10 @@
 				DEVELOPMENT_TEAM = 73AJY24UWM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Claim Saathi";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Claim Saathi uses the camera to photograph bills and claim documents.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Claim Saathi uses your photos to upload claim documents.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -202,7 +205,10 @@
 				DEVELOPMENT_TEAM = 73AJY24UWM;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Claim Saathi";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Claim Saathi uses the camera to photograph bills and claim documents.";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Claim Saathi uses your photos to upload claim documents.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
