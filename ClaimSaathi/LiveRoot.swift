@@ -146,7 +146,7 @@ private struct MainTabs: View {
         TabView(selection: $tab) {
             HomeTab().tag(0).tabItem { Label("Home", systemImage: "house.fill") }
             ClaimsTab().tag(1).tabItem { Label("Claims", systemImage: "list.bullet.rectangle") }
-            AssistantTab().tag(2).tabItem { Label("AI", systemImage: "sparkles") }
+            ChatScreen().tag(2).tabItem { Label("Chat", systemImage: "bubble.left.and.bubble.right.fill") }
             AlertsTab().tag(3).tabItem { Label("Alerts", systemImage: "bell.fill") }.badge(app.home?.counts?.unreadNotifications ?? 0)
             ProfileTab().tag(4).tabItem { Label("Profile", systemImage: "person.fill") }
         }
@@ -200,8 +200,9 @@ private struct HomeTab: View {
                         NavigationLink { TrackingView(claimId: claim.id) } label: {
                             CSCard {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    HStack { Text(claim.claimNumber ?? "").foregroundStyle(Color.csCyan).font(.headline); Spacer(); StatusBadge(title: claim.status?.rawValue ?? "", tint: .csWarning) }
+                                    HStack { Text(claim.claimNumber ?? "").foregroundStyle(Color.csCyan).font(.headline); if claim.isTemplate == true { StatusBadge(title: "Sample", tint: .csSecondary) }; Spacer(); StatusBadge(title: pretty(claim.status?.rawValue ?? ""), tint: statusTint(claim.status)) }
                                     Text(claim.hospital ?? "").foregroundStyle(Color.csNavy)
+                                    Text("\(claim.claimType == .CASHLESS ? "Cashless pre-auth" : "Reimbursement") · \(inr(claim.billAmount ?? claim.estimatedAmount))").font(.footnote).foregroundStyle(Color.csSecondary)
                                     let done = claim.checklist?.verified?.count ?? 0
                                     let total = claim.checklist?.required?.count ?? 0
                                     if total > 0 { ProgressView(value: Double(done), total: Double(total)).tint(Color.csCyan) }
@@ -209,6 +210,7 @@ private struct HomeTab: View {
                             }
                         }.buttonStyle(.plain)
                     }
+                    WarningList(warnings: app.home?.warnings ?? [])
                     HStack(alignment: .top, spacing: 8) {
                         NavigationLink { StartClaimView() } label: { ActionTile(icon: "plus.circle.fill", title: "Start claim", subtitle: "File or pre-auth") }
                         NavigationLink { AddPolicyView() } label: { ActionTile(icon: "doc.text.fill", title: "Link policy", subtitle: "Add cover") }
@@ -307,13 +309,9 @@ private struct AddPolicyView: View {
         .background(Color.csBackground)
         .navigationTitle("Link a policy")
         .navigationBarTitleDisplayMode(.inline)
-        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.pdf, .image]) { result in
-            guard let url = try? result.get(), url.startAccessingSecurityScopedResource() else { return }
-            defer { url.stopAccessingSecurityScopedResource() }
-            fileBytes = try? Data(contentsOf: url)
-            fileName = url.lastPathComponent
-            fileMime = url.pathExtension.lowercased() == "pdf" ? "application/pdf" : "image/jpeg"
-        }
+        .documentSource(isPresented: $showFiles, name: "policy", onPick: { file in
+            fileBytes = file.data; fileName = file.filename; fileMime = file.mime
+        }, onError: { app.error = $0 })
     }
 }
 
@@ -356,11 +354,23 @@ private struct StartClaimView: View {
     @State private var hospital = ""
     @State private var city = ""
     @State private var reason = ""
+    @State private var treatment = ""
     @State private var patient = ""
-    @State private var amount = ""
-    @State private var otp = "111000"
-    @State private var warnings: [String] = []
-    @State private var createdId: String?
+    @State private var admission = ""
+    @State private var discharge = ""
+    @State private var days = ""
+    @State private var roomRent = ""
+    @State private var estimate = ""
+    @State private var bill = ""
+    @State private var details: PatientDetails?
+    @State private var network: Bool?
+    @State private var roomType: String?
+    @State private var otp = ""
+    @State private var templates: DemoTemplates?
+    @State private var preview: PreviewResult?
+    @State private var created: Claim?
+    private func num(_ s: String) -> Int? { Int(s.filter(\.isNumber)) }
+    private var previewKey: String { [policyId, cashless ? "C" : "R", estimate, bill, roomRent, days].joined(separator: "|") }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -368,49 +378,75 @@ private struct StartClaimView: View {
                 switch step {
                 case 0:
                     Text("How should we file this?").font(.title3.bold()).foregroundStyle(Color.csNavy)
-                    Picker("Type", selection: $cashless) { Text("Reimbursement").tag(false); Text("Pre-auth").tag(true) }.pickerStyle(.segmented)
+                    Picker("Type", selection: $cashless) { Text("Reimbursement").tag(false); Text("Pre-auth (cashless)").tag(true) }.pickerStyle(.segmented)
                     ForEach(policies) { policy in
                         Button { policyId = policy.id } label: {
                             CSCard {
-                                Text(policy.policyNumber ?? "").font(.headline).foregroundStyle(policyId == policy.id ? Color.csCyan : Color.csNavy)
-                                Text(policy.insurer ?? "").font(.footnote).foregroundStyle(Color.csSecondary)
+                                HStack {
+                                    VStack(alignment: .leading) {
+                                        Text(policy.policyNumber ?? "").font(.headline).foregroundStyle(policyId == policy.id ? Color.csCyan : Color.csNavy)
+                                        Text("\(policy.insurer ?? "") · \(inr(policy.sumInsured)) cover").font(.footnote).foregroundStyle(Color.csSecondary)
+                                    }
+                                    Spacer()
+                                    if policyId == policy.id { Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.csCyan) }
+                                }
                             }
                         }.buttonStyle(.plain)
                     }
+                    if policies.isEmpty { Text("No policy yet. Link a policy first.").foregroundStyle(Color.csSecondary) }
                     PrimaryButton(title: "Next", enabled: !policyId.isEmpty) { withAnimation { step = 1 } }
                 case 1:
-                    Text("Hospital & patient").font(.title3.bold()).foregroundStyle(Color.csNavy)
+                    HStack {
+                        Text("Hospital & amounts").font(.title3.bold()).foregroundStyle(Color.csNavy)
+                        Spacer()
+                        Button { useSample() } label: { Label("Use sample data", systemImage: "wand.and.stars") }.font(.footnote.bold()).disabled(templates == nil)
+                    }
                     FieldBox(title: "Hospital", text: $hospital)
                     FieldBox(title: "City", text: $city)
-                    FieldBox(title: "Reason", text: $reason)
+                    FieldBox(title: "Diagnosis / reason", text: $reason)
+                    FieldBox(title: "Treatment", text: $treatment)
                     FieldBox(title: "Patient", text: $patient)
-                    FieldBox(title: cashless ? "Estimated amount" : "Bill amount", text: $amount, keyboard: .numberPad)
-                    PrimaryButton(title: "Review", enabled: hospital.count >= 2 && reason.count >= 2) { withAnimation { step = 2 } }
+                    FieldBox(title: cashless ? "Planned admission (yyyy-MM-dd)" : "Admission date (yyyy-MM-dd)", text: $admission)
+                    if !cashless { FieldBox(title: "Discharge date (yyyy-MM-dd)", text: $discharge) }
+                    HStack { FieldBox(title: "Days", text: $days, keyboard: .numberPad); FieldBox(title: "Room rent / day", text: $roomRent, keyboard: .numberPad) }
+                    FieldBox(title: "Estimated amount", text: $estimate, keyboard: .numberPad)
+                    if !cashless { FieldBox(title: "Final bill amount", text: $bill, keyboard: .numberPad) }
+                    previewBlock
+                    PrimaryButton(title: "Review", enabled: hospital.count >= 2 && reason.count >= 2 && patient.count >= 2) { withAnimation { step = 2 } }
                     GhostButton(title: "Back") { withAnimation { step = 0 } }
                 default:
                     Text("Confirm & consent").font(.title3.bold()).foregroundStyle(Color.csNavy)
                     CSCard {
                         VStack(spacing: 8) {
-                            row("Type", cashless ? "Pre-auth" : "Reimbursement")
+                            row("Type", cashless ? "Pre-auth (cashless)" : "Reimbursement")
                             row("Hospital", hospital)
                             row("Patient", patient)
-                            row("Amount", inr(Int(amount)))
+                            row("Admission", admission)
+                            row(cashless ? "Estimate" : "Bill", inr(cashless ? num(estimate) : (num(bill) ?? num(estimate))))
                         }
                     }
-                    ForEach(warnings, id: \.self) { Text($0).foregroundStyle(Color.csWarning) }
-                    OtpBoxes(value: $otp)
-                    GhostButton(title: "Check coverage") {
-                        app.run { warnings = try await API.shared.checkCoverage(claimBody()).warnings ?? [] }
+                    previewBlock
+                    if created == nil {
+                        Text("Enter the consent OTP (demo: \(templates?.consentOtp ?? "111000"))").font(.footnote).foregroundStyle(Color.csSecondary)
+                        OtpBoxes(value: $otp)
+                        PrimaryButton(title: "Submit claim", busy: app.busy, enabled: otp.count == 6) {
+                            app.run {
+                                let claim = try await API.shared.createClaim(claimBody())
+                                created = claim
+                            }
+                        }
+                        GhostButton(title: "Edit details") { withAnimation { step = 1 } }
                     }
-                    PrimaryButton(title: "Submit claim", busy: app.busy, enabled: otp.count == 6) {
-                        app.run {
-                            let claim = try await API.shared.createClaim(claimBody())
-                            if cashless { try? await API.shared.preauth(claim.id) }
-                            createdId = claim.id
+                    if let created {
+                        CSCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("✅ \(created.claimNumber ?? "Claim") submitted").font(.headline).foregroundStyle(Color.csSuccess)
+                                WarningList(warnings: (created.warnings ?? []).filter { $0.severity != "info" })
+                                NavigationLink("Upload documents") { ChecklistView(claimId: created.id) }
+                                NavigationLink("Track claim") { TrackingView(claimId: created.id) }
+                            }
                         }
                     }
-                    if let createdId { NavigationLink("Upload documents") { ChecklistView(claimId: createdId) } }
-                    GhostButton(title: "Edit details") { withAnimation { step = 1 } }
                 }
                 if let error = app.error { Text(error).foregroundStyle(Color.csError) }
             }.padding(16)
@@ -419,17 +455,48 @@ private struct StartClaimView: View {
         .navigationTitle("Start a claim")
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            policies = (try? await API.shared.policies()) ?? []
-            policyId = policies.first?.id ?? ""
+            async let p = try? API.shared.policies()
+            async let t = try? API.shared.templates()
+            policies = await p ?? []
+            templates = await t
+            policyId = templates?.policyId ?? policies.first?.id ?? ""
             if patient.isEmpty { patient = app.user?.name ?? "" }
+        }
+        .task(id: previewKey) {
+            guard !policyId.isEmpty, num(estimate) != nil || num(bill) != nil || num(roomRent) != nil else { preview = nil; return }
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled else { return }
+            preview = try? await API.shared.preview(PreviewBody(policyId: policyId, type: cashless ? "PREAUTH" : "REIMBURSEMENT", estimatedAmount: num(estimate), billAmount: cashless ? nil : num(bill), roomRentPerDay: num(roomRent), days: num(days), reason: reason.isEmpty ? nil : reason, treatment: treatment.isEmpty ? nil : treatment, admissionDate: admission.isEmpty ? nil : admission))
         }
     }
 
+    @ViewBuilder private var previewBlock: some View {
+        if let preview {
+            WarningList(warnings: preview.warnings ?? [])
+            if let e = preview.estimate {
+                Text("You may get \(inr(e.approvedAmount)) · you pay about \(inr(e.outOfPocket)) · cover left \(inr(preview.remainingSumInsured))")
+                    .font(.footnote.bold()).foregroundStyle(Color.csNavy)
+            }
+        }
+    }
+    private func useSample() {
+        guard let t = cashless ? templates?.preauth : templates?.reimbursement else { return }
+        if let id = t.policyId { policyId = id }
+        hospital = t.hospital ?? ""; city = t.hospitalCity ?? ""; reason = t.reason ?? ""; treatment = t.treatment ?? ""
+        patient = t.patientName ?? patient; admission = t.admissionDate ?? ""; discharge = t.dischargeDate ?? ""
+        days = t.days.map(String.init) ?? ""; roomRent = t.roomRentPerDay.map(String.init) ?? ""
+        estimate = t.estimatedAmount.map(String.init) ?? ""; bill = t.billAmount.map(String.init) ?? ""
+        details = t.patientDetails; network = t.isNetworkHospital; roomType = t.roomType
+    }
     private func row(_ k: String, _ v: String) -> some View {
         HStack { Text(k).foregroundStyle(Color.csSecondary); Spacer(); Text(v).foregroundStyle(Color.csNavy).bold() }
     }
     private func claimBody() -> CreateClaimBody {
-        CreateClaimBody(policyId: policyId, type: cashless ? "PREAUTH" : "REIMBURSEMENT", hospital: hospital, hospitalCity: city.isEmpty ? nil : city, reason: reason, billAmount: cashless ? nil : Int(amount), estimatedAmount: cashless ? Int(amount) : nil, patientName: patient, consentOtp: otp)
+        CreateClaimBody(policyId: policyId, type: cashless ? "PREAUTH" : "REIMBURSEMENT", hospital: hospital, hospitalCity: city.isEmpty ? nil : city, isNetworkHospital: network,
+                        reason: reason, treatment: treatment.isEmpty ? nil : treatment, admissionType: cashless ? "PLANNED" : "EMERGENCY",
+                        admissionDate: admission.isEmpty ? nil : admission, dischargeDate: cashless || discharge.isEmpty ? nil : discharge,
+                        days: num(days), roomType: roomType, roomRentPerDay: num(roomRent),
+                        billAmount: cashless ? nil : num(bill), estimatedAmount: num(estimate), patientName: patient, patientDetails: details, consentOtp: otp)
     }
 }
 
@@ -438,10 +505,7 @@ private struct ChecklistView: View {
     let claimId: String
     @State private var list: Checklist?
     @State private var picking: DocumentType?
-    @State private var photo: PhotosPickerItem?
     @State private var showChooser = false
-    @State private var showPhotos = false
-    @State private var showFiles = false
     var body: some View {
         ZStack {
             List {
@@ -461,7 +525,10 @@ private struct ChecklistView: View {
                         }
                     }
                 }
-                if let upload = app.lastUpload { NavigationLink("See validation") { ValidationView(upload: upload) } }
+                if let upload = app.lastUpload {
+                    Text("Last upload: \(pretty(upload.validation?.appStatus?.rawValue ?? "uploaded"))\(upload.validation?.fix.map { " · \($0)" } ?? "")").font(.footnote).foregroundStyle(upload.validation?.appStatus == .verified ? Color.csSuccess : Color.csWarning)
+                    NavigationLink("See validation") { ValidationView(upload: upload) }
+                }
                 if let error = app.error { Text(error).foregroundStyle(Color.csError) }
             }
             if app.busy {
@@ -475,32 +542,14 @@ private struct ChecklistView: View {
             }
         }
         .navigationTitle("Documents")
-        .confirmationDialog("Upload", isPresented: $showChooser) {
-            Button("Photos") { showPhotos = true }
-            Button("PDF or image") { showFiles = true }
-        }
-        .photosPicker(isPresented: $showPhotos, selection: $photo, matching: .images)
-        .onChange(of: photo) { _, item in
-            guard let item, let type = picking else { return }
-            photo = nil
+        .documentSource(isPresented: $showChooser, name: picking?.rawValue.lowercased() ?? "document", onPick: { file in
+            let type = picking?.rawValue
             app.run {
-                guard let data = try await item.loadTransferable(type: Data.self) else { return }
-                app.lastUpload = try await API.shared.upload(claimId: claimId, bytes: data, filename: "photo.jpg", mime: "image/jpeg", type: type.rawValue)
+                app.lastUpload = try await API.shared.upload(claimId: claimId, bytes: file.data, filename: file.filename, mime: file.mime, type: type)
                 list = try await API.shared.checklist(claimId)
             }
-        }
-        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.pdf, .image]) { result in
-            guard let url = try? result.get(), let type = picking else { return }
-            guard url.startAccessingSecurityScopedResource() else { return }
-            defer { url.stopAccessingSecurityScopedResource() }
-            guard let data = try? Data(contentsOf: url) else { return }
-            let pdf = url.pathExtension.lowercased() == "pdf"
-            app.run {
-                app.lastUpload = try await API.shared.upload(claimId: claimId, bytes: data, filename: url.lastPathComponent, mime: pdf ? "application/pdf" : "image/jpeg", type: type.rawValue)
-                list = try await API.shared.checklist(claimId)
-            }
-        }
-        .task { list = try? await API.shared.checklist(claimId) }
+        }, onError: { app.error = $0 })
+        .task { while !Task.isCancelled { if let l = try? await API.shared.checklist(claimId) { list = l }; try? await Task.sleep(for: .seconds(6)) } }
     }
 }
 
@@ -539,8 +588,9 @@ private struct ClaimsTab: View {
                 ForEach(claims) { claim in
                     NavigationLink { TrackingView(claimId: claim.id) } label: {
                         VStack(alignment: .leading, spacing: 6) {
-                            HStack { Text(claim.claimNumber ?? "").foregroundStyle(Color.csCyan).bold(); Spacer(); StatusBadge(title: claim.status?.rawValue ?? "", tint: .csWarning) }
+                            HStack { Text(claim.claimNumber ?? "").foregroundStyle(Color.csCyan).bold(); if claim.isTemplate == true { StatusBadge(title: "Sample", tint: .csSecondary) }; Spacer(); StatusBadge(title: pretty(claim.status?.rawValue ?? ""), tint: statusTint(claim.status)) }
                             Text(claim.hospital ?? "")
+                            Text("\(claim.claimType == .CASHLESS ? "Cashless pre-auth" : "Reimbursement") · \(claim.patientName ?? "")").font(.caption).foregroundStyle(Color.csSecondary)
                             Text(inr(claim.billAmount ?? claim.estimatedAmount)).font(.headline).foregroundStyle(Color.csNavy)
                         }
                     }
@@ -548,7 +598,8 @@ private struct ClaimsTab: View {
                 if let error { Text(error).foregroundStyle(Color.csError) }
             }
             .navigationTitle("Claims")
-            .task(id: filter) { do { claims = try await API.shared.claims(status: filter) } catch { self.error = error.localizedDescription } }
+            .task(id: filter) { do { claims = try await API.shared.claims(status: filter); error = nil } catch { self.error = error.localizedDescription } }
+            .refreshable { claims = (try? await API.shared.claims(status: filter)) ?? claims }
         }
     }
 }
@@ -556,9 +607,18 @@ private struct ClaimsTab: View {
 private struct TrackingView: View {
     let claimId: String
     @State private var timeline: Timeline?
+    @State private var detail: Claim?
     @State private var error: String?
     var body: some View {
         List {
+            if let d = detail {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack { Text(d.hospital ?? "").font(.headline).foregroundStyle(Color.csNavy); Spacer(); StatusBadge(title: pretty(d.status?.rawValue ?? ""), tint: statusTint(d.status)) }
+                    Text("\(d.claimType == .CASHLESS ? "Cashless pre-auth" : "Reimbursement") · \(d.patientName ?? "") · \(d.reason ?? "")").font(.footnote).foregroundStyle(Color.csSecondary)
+                    Text("Bill \(inr(d.billAmount)) · Estimate \(inr(d.estimatedAmount))").font(.footnote).foregroundStyle(Color.csNavy)
+                }
+                if !(d.warnings ?? []).isEmpty { WarningList(warnings: d.warnings ?? []).listRowBackground(Color.clear) }
+            }
             if let update = timeline?.latestOpsUpdate?.message {
                 CSCard {
                     VStack(alignment: .leading, spacing: 6) {
@@ -580,13 +640,16 @@ private struct TrackingView: View {
                     }
                 }
             }
-            NavigationLink("Queries") { QueriesView() }
+            ForEach(timeline?.openQueries ?? []) { q in
+                NavigationLink { QueryDetailView(queryId: q.id) } label: { Text("Reply: \(q.message ?? "Query")").foregroundStyle(Color.csWarning) }
+            }
+            NavigationLink("All queries") { QueriesView() }
             NavigationLink("Upload documents") { ChecklistView(claimId: claimId) }
             NavigationLink("Settlement") { SettlementView(claimId: claimId) }
             if let error { Text(error).foregroundStyle(Color.csError) }
         }
         .navigationTitle(timeline?.claimNumber ?? "Claim")
-        .task { while !Task.isCancelled { do { timeline = try await API.shared.timeline(claimId) } catch { self.error = error.localizedDescription }; try? await Task.sleep(for: .seconds(5)) } }
+        .task { while !Task.isCancelled { do { timeline = try await API.shared.timeline(claimId); detail = try await API.shared.claim(claimId); error = nil } catch { self.error = error.localizedDescription }; try? await Task.sleep(for: .seconds(5)) } }
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Link("PDF", destination: API.shared.summaryPdfURL(claimId)) } }
     }
 }
@@ -626,83 +689,20 @@ private struct QueryDetailView: View {
                     checks = result.document?.validation?.checks ?? []
                 }
             }
-            GhostButton(title: "Attach a file") { showFiles = true }
+            GhostButton(title: "Attach file / photo and send") { showFiles = true }
             if !status.isEmpty { Text(status).foregroundStyle(Color.csSuccess) }
             ForEach(checks) { Text("\($0.label ?? ""): \($0.detail ?? "")").font(.footnote) }
             if let error = app.error { Text(error).foregroundStyle(Color.csError) }
         }
         .navigationTitle("Query")
         .task { explain = (try? await API.shared.explainQuery(queryId).explanation) ?? "" }
-        .fileImporter(isPresented: $showFiles, allowedContentTypes: [.pdf, .image]) { result in
-            guard let url = try? result.get(), url.startAccessingSecurityScopedResource() else { return }
-            defer { url.stopAccessingSecurityScopedResource() }
-            guard let data = try? Data(contentsOf: url) else { return }
+        .documentSource(isPresented: $showFiles, name: "query-reply", onPick: { file in
             app.run {
-                let answered = try await API.shared.respond(queryId: queryId, text: reply.isEmpty ? "Uploaded the requested file" : reply, bytes: data, filename: url.lastPathComponent, mime: "application/pdf", type: nil)
+                let answered = try await API.shared.respond(queryId: queryId, text: reply.isEmpty ? "Uploaded the requested file" : reply, bytes: file.data, filename: file.filename, mime: file.mime, type: nil)
                 status = answered.status == .CLOSED ? "Query resolved ✓" : "Sent to the claims team"
                 checks = answered.document?.validation?.checks ?? []
             }
-        }
-    }
-}
-
-private struct AssistantTab: View {
-    @Environment(AppState.self) private var app
-    @State private var messages: [(Bool, String)] = []
-    @State private var input = ""
-    @State private var followUps: [String] = []
-    private let starters = ["Where is my claim?", "Which documents are still pending?", "What is my room rent limit?", "How much will I get?", "What is not covered?"]
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Ask Saathi").font(.title2.bold()).foregroundStyle(.white)
-                    Text("Grounded in your policy and claim.").font(.footnote).foregroundStyle(.white.opacity(0.75))
-                }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.csNavy)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if messages.isEmpty {
-                            ForEach(starters, id: \.self) { prompt in
-                                Button { send(prompt) } label: {
-                                    CSCard { Text(prompt).foregroundStyle(Color.csNavy) }
-                                }.buttonStyle(.plain)
-                            }
-                        }
-                        ForEach(Array(messages.enumerated()), id: \.offset) { _, message in
-                            Text(message.1)
-                                .padding(14)
-                                .foregroundStyle(message.0 ? .white : Color.csNavy)
-                                .background(message.0 ? Color.csNavy : .white)
-                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                .frame(maxWidth: .infinity, alignment: message.0 ? .trailing : .leading)
-                        }
-                        ForEach(followUps, id: \.self) { prompt in
-                            Button(prompt) { send(prompt) }.font(.footnote).foregroundStyle(Color.csCyan)
-                        }
-                    }.padding(16)
-                }
-                VStack(spacing: 8) {
-                    TextField("Message", text: $input).padding(12).background(Color.csBackground).clipShape(RoundedRectangle(cornerRadius: 14))
-                    PrimaryButton(title: "Send", busy: app.busy, enabled: !input.trimmingCharacters(in: .whitespaces).isEmpty) { send(input) }
-                }.padding(16).background(Color.white)
-            }
-            .background(Color.csBackground)
-            .toolbar(.hidden, for: .navigationBar)
-        }
-    }
-    private func send(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        messages.append((true, trimmed)); input = ""
-        let claimId = app.home?.currentClaim?.id
-        app.run {
-            let reply = try await API.shared.chat(trimmed, claimId: claimId)
-            messages.append((false, reply.answer))
-            followUps = reply.followUps ?? []
-        }
+        }, onError: { app.error = $0 })
     }
 }
 
@@ -720,9 +720,16 @@ private struct AlertsTab: View {
                             notes = try await API.shared.notifications().items
                         }
                     } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(note.title ?? "").font(.headline).foregroundStyle(Color.csNavy)
-                            Text(note.body ?? "").font(.footnote).foregroundStyle(Color.csSecondary)
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: note.type == .WARNING ? "exclamationmark.triangle.fill" : note.type == .SUCCESS ? "checkmark.seal.fill" : note.type == .ACTION_REQUIRED ? "hand.raised.fill" : "info.circle.fill")
+                                .foregroundStyle(note.type == .WARNING ? Color.csWarning : note.type == .SUCCESS ? Color.csSuccess : note.type == .ACTION_REQUIRED ? Color.csError : Color.csCyan)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(note.title ?? "").font(.headline).foregroundStyle(Color.csNavy)
+                                Text(note.body ?? "").font(.footnote).foregroundStyle(Color.csSecondary)
+                                Text("\(note.claim?.claimNumber ?? "") \(shortDate(note.createdAt))").font(.caption2).foregroundStyle(Color.csSecondary)
+                            }
+                            Spacer()
+                            if note.read != true { Circle().fill(Color.csCyan).frame(width: 8, height: 8) }
                         }
                     }
                 }
@@ -786,6 +793,7 @@ private struct ProfileTab: View {
                         }
                     }
                     NavigationLink { BankView() } label: { ActionTile(icon: "building.columns.fill", title: "Bank account", subtitle: "For settlement payouts") }
+                    NavigationLink { FinanceView() } label: { ActionTile(icon: "indianrupeesign.circle.fill", title: "Money", subtitle: "Balances, expenses, medical spend") }
                     GhostButton(title: "Log out") { app.logout() }
                     if let error = app.error { Text(error).foregroundStyle(Color.csError) }
                 }.padding(16)
@@ -804,9 +812,21 @@ private struct BankView: View {
     @State private var ifsc = ""
     @State private var bank = ""
     @State private var saved = false
+    @State private var current: BankMasked?
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                if let current {
+                    CSCard {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("PAYOUT ACCOUNT").font(.caption.bold()).foregroundStyle(Color.csCyan)
+                            Text("\(current.bankName ?? "Bank") \(current.accountNumberMasked ?? "")").font(.headline).foregroundStyle(Color.csNavy)
+                            Text("\(current.accountName ?? "") · \(current.ifsc ?? "")\(current.verified == true ? " · verified ✓" : "")").font(.footnote).foregroundStyle(Color.csSecondary)
+                        }
+                    }
+                }
+                NavigationLink { FinanceView() } label: { ActionTile(icon: "indianrupeesign.circle.fill", title: "Money overview", subtitle: "Balances, expenses, payouts") }
+                Text("Update payout account").font(.headline).foregroundStyle(Color.csNavy)
                 FieldBox(title: "Account name", text: $holder)
                 FieldBox(title: "Account number", text: $account, keyboard: .numberPad)
                 FieldBox(title: "IFSC", text: $ifsc)
@@ -814,7 +834,7 @@ private struct BankView: View {
                 FieldBox(title: "Bank", text: $bank)
                 PrimaryButton(title: "Save with OTP 111000", busy: app.busy) {
                     app.run {
-                        _ = try await API.shared.saveBank(BankBody(accountName: holder, accountNumber: account, ifsc: ifsc, bankName: bank.isEmpty ? nil : bank, otp: "111000"))
+                        current = try await API.shared.saveBank(BankBody(accountName: holder, accountNumber: account, ifsc: ifsc, bankName: bank.isEmpty ? nil : bank, otp: "111000")).bank
                         saved = true
                     }
                 }
@@ -825,6 +845,7 @@ private struct BankView: View {
         .background(Color.csBackground)
         .navigationTitle("Bank")
         .onAppear { if holder.isEmpty { holder = app.user?.name ?? "" } }
+        .task { current = try? await API.shared.bank().bank }
     }
 }
 
@@ -844,7 +865,9 @@ private struct SettlementView: View {
                 }
             }
             Text("Approved \(inr(settlement?.approvedAmount))").font(.title2.bold()).foregroundStyle(Color.csSuccess)
-            if let utr = settlement?.utr { Text("UTR \(utr)") }
+            if let status = settlement?.status { StatusBadge(title: pretty(status.rawValue), tint: status == .PAID ? .csSuccess : .csWarning) }
+            if let explanation = settlement?.explanation { Text(explanation).font(.footnote).foregroundStyle(Color.csSecondary) }
+            if let utr = settlement?.utr { Text("UTR \(utr)\(settlement?.paidAt.map { " · paid \(shortDate($0))" } ?? "")") }
             Link("Summary PDF", destination: API.shared.summaryPdfURL(claimId))
             if let error { Text(error).foregroundStyle(Color.csError) }
         }

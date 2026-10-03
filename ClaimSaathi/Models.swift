@@ -56,8 +56,13 @@ struct Policy: Decodable, Identifiable, Hashable {
     var policyNumber: String?
     var sumInsured: Int?
     var roomRentLimit: Int?
+    var icuLimit: Int?
     var coPayPercent: Double?
+    var startDate: String?
+    var endDate: String?
     var members: [Member]?
+    var isTemplate: Bool?
+    var fileUrl: String?
 }
 struct HomeChecklist: Decodable, Hashable {
     var required: [String]?
@@ -68,12 +73,25 @@ struct Claim: Decodable, Identifiable, Hashable {
     let id: String
     var claimNumber: String?
     var hospital: String?
+    var hospitalCity: String?
     var reason: String?
+    var treatment: String?
+    var patientName: String?
     var status: ClaimStatus?
+    var claimType: ClaimType?
+    var admissionDate: String?
+    var dischargeDate: String?
+    var roomRentPerDay: Int?
+    var days: Int?
     var billAmount: Int?
     var estimatedAmount: Int?
+    var isTemplate: Bool?
+    var createdAt: String?
     var checklist: HomeChecklist?
+    var settlement: SettlementLite?
+    var warnings: [AmountWarning]?
 }
+struct SettlementLite: Decodable, Hashable { var approvedAmount: Int?; var billAmount: Int?; var status: SettlementStatus? }
 struct Deduction: Decodable, Hashable { var label: String?; var amount: Int?; var reason: String?; var clause: String? }
 struct Settlement: Decodable, Hashable {
     var billAmount: Int?
@@ -82,14 +100,17 @@ struct Settlement: Decodable, Hashable {
     var approvedAmount: Int?
     var status: SettlementStatus?
     var utr: String?
+    var paidAt: String?
+    var explanation: String?
     var isDemo: Bool?
+    var isEstimate: Bool?
     var preview: Bool?
 }
 struct ClaimRef: Decodable, Hashable { var id: String?; var claimNumber: String?; var hospital: String? }
 struct PendingAction: Decodable, Hashable { var kind: String; var title: String; var claimId: String?; var queryId: String? }
 struct HomeCounts: Decodable, Hashable { var unreadNotifications: Int?; var activeClaims: Int?; var openQueries: Int? }
-struct Home: Decodable { var user: User; var activePolicy: Policy?; var currentClaim: Claim?; var pendingActions: [PendingAction]?; var counts: HomeCounts?; var paidOut: Int? }
-struct AuthResponse: Decodable { var token: String; var user: User; var needsProfile: Bool? }
+struct Home: Decodable { var user: User; var activePolicy: Policy?; var currentClaim: Claim?; var pendingActions: [PendingAction]?; var counts: HomeCounts?; var paidOut: Int?; var warnings: [AmountWarning]? }
+struct AuthResponse: Decodable { var token: String; var user: User; var needsProfile: Bool?; var isNewUser: Bool?; var starterProvisioned: Bool? }
 struct ProfileResponse: Decodable { var user: User; var token: String }
 struct OtpSent: Decodable { var sent: Bool? }
 struct Coverage: Decodable, Hashable { var item: String?; var detail: String? }
@@ -132,7 +153,7 @@ struct Step: Decodable, Hashable, Identifiable {
 struct OpsUpdate: Decodable, Hashable { var message: String? }
 struct Timeline: Decodable { var claimNumber: String?; var status: ClaimStatus?; var steps: [Step]?; var openQueries: [Query]?; var latestOpsUpdate: OpsUpdate? }
 struct Grounded: Decodable, Hashable { var policyNumber: String?; var claimNumber: String? }
-struct ChatReply: Decodable { var answer: String; var followUps: [String]?; var grounded: Grounded? }
+struct ChatReply: Decodable { var answer: String; var intent: String?; var followUps: [String]?; var suggestions: [String]?; var cards: [ChatCard]?; var sources: [String]?; var grounded: Grounded? }
 struct Query: Decodable, Identifiable {
     var id: String
     var message: String?
@@ -141,11 +162,11 @@ struct Query: Decodable, Identifiable {
     var claim: ClaimRef?
     var document: UploadResponse?
 }
-struct AppNotification: Decodable, Identifiable, Hashable { var id: String; var claimId: String?; var title: String?; var body: String? }
+struct AppNotification: Decodable, Identifiable, Hashable { var id: String; var claimId: String?; var title: String?; var body: String?; var type: NotificationType?; var read: Bool?; var createdAt: String?; var claim: ClaimRef? }
 struct NotificationsPage: Decodable { var items: [AppNotification]; var unread: Int? }
 struct CoverageResult: Decodable { var warnings: [String]? }
 struct QueryExplain: Decodable { var explanation: String? }
-struct BankMasked: Decodable { var accountNumberMasked: String?; var ifsc: String? }
+struct BankMasked: Decodable { var accountName: String?; var accountNumberMasked: String?; var ifsc: String?; var bankName: String?; var verified: Bool? }
 struct BankResponse: Decodable { var bank: BankMasked? }
 
 struct PhoneBody: Encodable { let phone: String }
@@ -154,16 +175,25 @@ struct ProfileBody: Encodable { var name: String; var email: String; var dob: St
 struct ProfilePatch: Encodable { var name: String?; var city: String? }
 struct AddPolicyBody: Encodable { var insurer: String; var policyNumber: String; var sumInsured: Int; var startDate: String; var roomRentLimit: Int?; var coPayPercent: Double? }
 struct BankBody: Encodable { var accountName: String; var accountNumber: String; var ifsc: String; var bankName: String?; var otp: String }
+struct PatientDetails: Codable, Hashable { var age: Int?; var gender: String?; var relation: String? }
 struct CreateClaimBody: Encodable {
     var policyId: String
     var type: String
     var hospital: String
     var hospitalCity: String?
+    var isNetworkHospital: Bool?
     var reason: String
+    var treatment: String?
     var admissionType: String = "EMERGENCY"
+    var admissionDate: String?
+    var dischargeDate: String?
+    var days: Int?
+    var roomType: String?
+    var roomRentPerDay: Int?
     var billAmount: Int?
     var estimatedAmount: Int?
     var patientName: String
+    var patientDetails: PatientDetails?
     var consentOtp: String?
 }
 struct ChatBody: Encodable { var message: String; var claimId: String? }
@@ -186,6 +216,7 @@ extension API {
         form.field("startDate", body.startDate)
         if let room = body.roomRentLimit { form.field("roomRentLimit", String(room)) }
         if let copay = body.coPayPercent { form.field("coPayPercent", String(copay)) }
+        try PickedFile.check(bytes)
         form.file(filename: filename, mime: mime, bytes: bytes)
         return try await request("me/policies", method: "POST", body: form.finalized(), contentType: form.contentType)
     }
@@ -193,6 +224,8 @@ extension API {
     func saveBank(_ body: BankBody) async throws -> BankResponse { try await request("me/bank", method: "POST", json: body) }
     func checkCoverage(_ body: CreateClaimBody) async throws -> CoverageResult { try await request("claims/check-coverage", method: "POST", json: body) }
     func createClaim(_ body: CreateClaimBody) async throws -> Claim { try await request("claims", method: "POST", json: body) }
+    func claim(_ id: String) async throws -> Claim { try await request("claims/\(id)") }
+    func bank() async throws -> BankResponse { try await request("me/bank") }
     func preauth(_ id: String) async throws { let _: EmptyBody = try await request("claims/\(id)/preauth", method: "POST") }
     func claims(status: String? = nil) async throws -> [Claim] { try await request("claims", query: ["status": status]) }
     func checklist(_ id: String) async throws -> Checklist { try await request("claims/\(id)/checklist") }
@@ -206,6 +239,7 @@ extension API {
     func markAllRead() async throws { let _: EmptyBody = try await request("notifications/read-all", method: "POST") }
 
     func upload(claimId: String, bytes: Data, filename: String, mime: String, type: String?) async throws -> UploadResponse {
+        try PickedFile.check(bytes)
         var form = Multipart()
         form.file(filename: filename, mime: mime, bytes: bytes)
         if let type { form.field("type", type) }
@@ -216,7 +250,7 @@ extension API {
         var form = Multipart()
         form.field("response", text)
         if let type { form.field("type", type) }
-        if let bytes, let filename, let mime { form.file(filename: filename, mime: mime, bytes: bytes) }
+        if let bytes, let filename, let mime { try PickedFile.check(bytes); form.file(filename: filename, mime: mime, bytes: bytes) }
         return try await request("queries/\(queryId)/respond", method: "POST", body: form.finalized(), contentType: form.contentType)
     }
 }
