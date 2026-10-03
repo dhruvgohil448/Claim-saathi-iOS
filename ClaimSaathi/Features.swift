@@ -138,6 +138,16 @@ struct PickedFile {
         if data.count > maxBytes { throw APIError.http(413, "File is larger than 10 MB. Pick a smaller file or take a clearer photo.") }
         if data.isEmpty { throw APIError.http(400, "The selected file is empty.") }
     }
+    /// Resize so the longest side is at most `maxSide` px — keeps uploads small and fast.
+    static func downscale(_ image: UIImage, maxSide: CGFloat) -> UIImage {
+        let w = image.size.width * image.scale, h = image.size.height * image.scale
+        let longest = max(w, h)
+        guard longest > maxSide, longest > 0 else { return image }
+        let ratio = maxSide / longest
+        let size = CGSize(width: floor(w * ratio), height: floor(h * ratio))
+        let format = UIGraphicsImageRendererFormat.default(); format.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in image.draw(in: CGRect(origin: .zero, size: size)) }
+    }
     static func mime(for url: URL) -> String {
         switch url.pathExtension.lowercased() {
         case "pdf": "application/pdf"
@@ -149,8 +159,9 @@ struct PickedFile {
     }
     /// Re-encode any photo (HEIC, PNG…) as JPEG so every server path accepts it, keeping it under 10 MB.
     static func jpeg(_ data: Data, name: String) -> PickedFile? {
-        guard let image = UIImage(data: data) else { return nil }
-        var quality: CGFloat = 0.8
+        guard let original = UIImage(data: data) else { return nil }
+        let image = downscale(original, maxSide: 1600)
+        var quality: CGFloat = 0.7
         var out = image.jpegData(compressionQuality: quality)
         while let o = out, o.count > maxBytes, quality > 0.2 { quality -= 0.2; out = image.jpegData(compressionQuality: quality) }
         return out.map { PickedFile(data: $0, filename: "\(name)-\(Int(Date().timeIntervalSince1970)).jpg", mime: "image/jpeg") }
@@ -199,7 +210,7 @@ struct DocumentSourceModifier: ViewModifier {
             }
             .fullScreenCover(isPresented: $showCamera) {
                 CameraPicker { image in
-                    if let data = image.jpegData(compressionQuality: 0.8), let f = PickedFile.jpeg(data, name: name) { onPick(f) } else { onError("Could not read the photo.") }
+                    if let data = image.jpegData(compressionQuality: 0.9), let f = PickedFile.jpeg(data, name: name) { onPick(f) } else { onError("Could not read the photo.") }
                 }.ignoresSafeArea()
             }
             .photosPicker(isPresented: $showPhotos, selection: $photo, matching: .images)
@@ -236,7 +247,12 @@ extension View {
 struct ChatMessage: Identifiable { let id = UUID(); let mine: Bool; let text: String; var cards: [ChatCard] = [] }
 
 struct ChatScreen: View {
+    var initialPrompt: String? = nil
+    var contextClaimId: String? = nil
+    var inSheet = false
     @Environment(AppState.self) private var app
+    @Environment(\.dismiss) private var dismiss
+    static let quickActions = ["Track my claim", "Explain deductions", "What documents are missing?", "Explain my policy in Hindi"]
     @State private var messages: [ChatMessage] = []
     @State private var input = ""
     @State private var chips: [String] = []
@@ -245,20 +261,43 @@ struct ChatScreen: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Ask Saathi").font(.title2.bold()).foregroundStyle(.white)
-                    Text("Claims, cover, bank balances and medical spend").font(.footnote).foregroundStyle(.white.opacity(0.75))
+                HStack(spacing: 12) {
+                    SaathiAvatar(size: 42)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Ask Saathi").font(.title3.bold()).foregroundStyle(.white)
+                        HStack(spacing: 5) {
+                            Circle().fill(Color.csSuccess).frame(width: 7, height: 7)
+                            Text("AI claim assistant · English & हिंदी").font(.caption).foregroundStyle(.white.opacity(0.8))
+                        }
+                    }
+                    Spacer()
+                    if inSheet {
+                        Button { dismiss() } label: { Image(systemName: "xmark").font(.footnote.bold()).foregroundStyle(.white).padding(10).background(Color.white.opacity(0.15)).clipShape(Circle()) }
+                    }
                 }
-                .padding(20).frame(maxWidth: .infinity, alignment: .leading).background(Color.csNavy)
+                .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                .background(LinearGradient(colors: [Color(red: 0, green: 0.23, blue: 0.55), Color.csNavy], startPoint: .topLeading, endPoint: .bottomTrailing))
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 10) {
-                            ForEach(messages) { m in bubble(m).id(m.id) }
-                            if sending { HStack { ProgressView(); Text("Saathi is typing…").font(.footnote).foregroundStyle(Color.csSecondary) }.id("typing") }
+                            if messages.isEmpty && !sending {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("Try asking").font(.caption.bold()).foregroundStyle(Color.csSecondary)
+                                    ForEach(Self.quickActions, id: \.self) { q in
+                                        Button { send(q) } label: {
+                                            HStack { Image(systemName: "sparkles").foregroundStyle(Color.csCyan); Text(q).foregroundStyle(Color.csNavy).font(.subheadline.weight(.semibold)); Spacer(); Image(systemName: "arrow.up.right").font(.caption).foregroundStyle(Color.csSecondary) }
+                                                .padding(12).background(Color.white).clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                        }.buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                            ForEach(messages) { m in bubble(m).id(m.id).transition(.move(edge: m.mine ? .trailing : .leading).combined(with: .opacity)) }
+                            if sending { HStack(alignment: .bottom, spacing: 8) { SaathiAvatar(size: 26); TypingDots() }.id("typing") }
                             if let error { Text(error).font(.footnote).foregroundStyle(Color.csError) }
                         }.padding(16)
                     }
                     .onChange(of: messages.count) { _, _ in withAnimation { proxy.scrollTo(messages.last?.id, anchor: .bottom) } }
+                    .onChange(of: sending) { _, now in if now { withAnimation { proxy.scrollTo("typing", anchor: .bottom) } } }
                 }
                 if !chips.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
@@ -266,14 +305,16 @@ struct ChatScreen: View {
                             ForEach(chips, id: \.self) { chip in
                                 Button(chip) { send(chip) }
                                     .font(.footnote.weight(.semibold)).padding(.horizontal, 12).padding(.vertical, 8)
-                                    .foregroundStyle(Color.csNavy).background(Color.csCyan.opacity(0.15)).clipShape(Capsule())
+                                    .foregroundStyle(Color.csNavy).background(Color.white).clipShape(Capsule())
+                                    .overlay(Capsule().stroke(Color.csCyan.opacity(0.5), lineWidth: 1))
+                                    .disabled(sending)
                             }
                         }.padding(.horizontal, 16).padding(.vertical, 8)
                     }
                 }
                 HStack(spacing: 8) {
                     TextField("Ask about your claim or money…", text: $input).padding(12).background(Color.csBackground).clipShape(RoundedRectangle(cornerRadius: 14)).onSubmit { send(input) }
-                    Button { send(input) } label: { Image(systemName: "paperplane.fill").padding(12).foregroundStyle(.white).background(Color.csCyan).clipShape(Circle()) }
+                    Button { send(input) } label: { Image(systemName: "paperplane.fill").padding(12).foregroundStyle(.white).background(input.trimmingCharacters(in: .whitespaces).isEmpty ? Color.csCyan.opacity(0.4) : Color.csCyan).clipShape(Circle()) }
                         .disabled(input.trimmingCharacters(in: .whitespaces).isEmpty || sending)
                 }.padding(12).background(Color.white)
             }
@@ -281,35 +322,43 @@ struct ChatScreen: View {
             .toolbar(.hidden, for: .navigationBar)
             .task {
                 guard messages.isEmpty else { return }
+                chips = Self.quickActions
                 if let s = try? await API.shared.chatSuggestions() {
-                    if let g = s.greeting { messages = [ChatMessage(mine: false, text: g)] }
-                    chips = s.suggestions ?? []
+                    if let g = s.greeting, initialPrompt == nil { messages = [ChatMessage(mine: false, text: g)] }
+                    var merged = s.suggestions ?? []
+                    for q in Self.quickActions where !merged.contains(q) { merged.append(q) }
+                    chips = merged
                 }
+                if let initialPrompt { send(initialPrompt) }
             }
         }
     }
 
     @ViewBuilder private func bubble(_ m: ChatMessage) -> some View {
-        VStack(alignment: m.mine ? .trailing : .leading, spacing: 8) {
-            Text(m.text)
-                .padding(12)
-                .foregroundStyle(m.mine ? .white : Color.csNavy)
-                .background(m.mine ? Color.csNavy : .white)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .frame(maxWidth: 300, alignment: m.mine ? .trailing : .leading)
-            ForEach(m.cards, id: \.self) { FinanceCardView(card: $0) }
+        HStack(alignment: .top, spacing: 8) {
+            if !m.mine { SaathiAvatar(size: 26) }
+            VStack(alignment: m.mine ? .trailing : .leading, spacing: 8) {
+                Text(m.text)
+                    .padding(12)
+                    .foregroundStyle(m.mine ? .white : Color.csNavy)
+                    .background(m.mine ? Color.csCyan : .white)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .shadow(color: Color.csNavy.opacity(m.mine ? 0 : 0.05), radius: 4, y: 2)
+                    .frame(maxWidth: 290, alignment: m.mine ? .trailing : .leading)
+                ForEach(m.cards, id: \.self) { FinanceCardView(card: $0) }
+            }
         }.frame(maxWidth: .infinity, alignment: m.mine ? .trailing : .leading)
     }
 
     private func send(_ text: String) {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, !sending else { return }
-        messages.append(ChatMessage(mine: true, text: t)); input = ""; sending = true; error = nil
-        let claimId = app.home?.currentClaim?.id
+        withAnimation(.spring(duration: 0.3)) { messages.append(ChatMessage(mine: true, text: t)) }; input = ""; sending = true; error = nil
+        let claimId = contextClaimId ?? app.home?.currentClaim?.id
         Task {
             do {
                 let r = try await API.shared.chat(t, claimId: claimId)
-                messages.append(ChatMessage(mine: false, text: r.answer, cards: r.cards ?? []))
+                withAnimation(.spring(duration: 0.3)) { messages.append(ChatMessage(mine: false, text: r.answer, cards: r.cards ?? [])) }
                 chips = r.suggestions ?? r.followUps ?? chips
             } catch { self.error = error.localizedDescription }
             sending = false

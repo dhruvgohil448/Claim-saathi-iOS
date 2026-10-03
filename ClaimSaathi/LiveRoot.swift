@@ -176,6 +176,19 @@ private struct HomeTab: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(LinearGradient(colors: [Color(red: 0, green: 0.23, blue: 0.55), Color.csNavy], startPoint: .topLeading, endPoint: .bottomTrailing).ignoresSafeArea(edges: .top))
 
+                    Group {
+                    if app.home == nil {
+                        SkeletonCard(lines: 2)
+                        SkeletonCard(lines: 3)
+                        SkeletonCard(lines: 1)
+                    }
+                    if let home = app.home {
+                        if home.activePolicy == nil {
+                            SaathiTip(text: "Start by linking your health policy — I’ll explain your cover, room-rent limit and co-pay in simple words.")
+                        } else if home.currentClaim == nil {
+                            SaathiTip(text: "Your policy is linked. Tap “Start claim” — I’ll warn you about co-pay and room-rent limits before you submit.")
+                        }
+                    }
                     if let policy = app.home?.activePolicy {
                         NavigationLink { PolicyReaderView(policyId: policy.id) } label: {
                             CSCard {
@@ -205,7 +218,7 @@ private struct HomeTab: View {
                                     Text("\(claim.claimType == .CASHLESS ? "Cashless pre-auth" : "Reimbursement") · \(inr(claim.billAmount ?? claim.estimatedAmount))").font(.footnote).foregroundStyle(Color.csSecondary)
                                     let done = claim.checklist?.verified?.count ?? 0
                                     let total = claim.checklist?.required?.count ?? 0
-                                    if total > 0 { ProgressView(value: Double(done), total: Double(total)).tint(Color.csCyan) }
+                                    if total > 0 { UploadProgressBar(done: done, total: total).padding(.top, 4) }
                                 }
                             }
                         }.buttonStyle(.plain)
@@ -216,34 +229,62 @@ private struct HomeTab: View {
                         NavigationLink { AddPolicyView() } label: { ActionTile(icon: "doc.text.fill", title: "Link policy", subtitle: "Add cover") }
                         NavigationLink { BankView() } label: { ActionTile(icon: "building.columns.fill", title: "Bank", subtitle: "Payout account") }
                     }
-                    Text("Needs you").font(.title3.bold()).foregroundStyle(Color.csNavy)
+                    Text("Needs you").font(.title3.bold()).foregroundStyle(Color.csNavy).padding(.top, 4)
                     ForEach(app.home?.pendingActions ?? [], id: \.title) { action in
                         actionLink(action)
                     }
-                    if app.home?.pendingActions?.isEmpty != false {
-                        CSCard { Text("You’re all caught up.").foregroundStyle(Color.csSecondary) }
+                    if app.home != nil && app.home?.pendingActions?.isEmpty != false {
+                        CSCard { EmptyStateView(icon: "checkmark.circle.fill", title: "You’re all caught up", message: "No pending actions. We’ll alert you when something needs you.") }
                     }
                     if let error = app.error { Text(error).font(.footnote).foregroundStyle(Color.csError) }
+                    }
+                    .padding(.horizontal, 16)
+                    Color.clear.frame(height: 72)
                 }
             }
             .background(Color.csBackground.ignoresSafeArea())
+            .refreshable { if let home = try? await API.shared.home() { app.home = home } }
+            .saathiFab(claimId: app.home?.currentClaim?.id)
             .toolbar(.hidden, for: .navigationBar)
             .task { while !Task.isCancelled { if let home = try? await API.shared.home() { app.home = home }; try? await Task.sleep(for: .seconds(5)) } }
         }
     }
 
+    private func actionIcon(_ kind: String) -> String {
+        switch kind {
+        case "QUERY": "questionmark.bubble.fill"
+        case "MISSING_DOC", "REUPLOAD_DOC": "doc.badge.arrow.up.fill"
+        case "ADD_BANK": "building.columns.fill"
+        case "COMPLETE_PROFILE": "person.crop.circle.badge.exclamationmark"
+        default: "doc.text.fill"
+        }
+    }
+
     private func stat(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading) {
+        VStack(alignment: .leading, spacing: 2) {
             Text(label).font(.caption).foregroundStyle(.white.opacity(0.7))
-            Text(value).font(.headline).foregroundStyle(.white)
-        }.frame(maxWidth: .infinity, alignment: .leading)
+            Text(value).font(.headline).foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.7)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     @ViewBuilder private func actionLink(_ action: PendingAction) -> some View {
         let card = CSCard {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(pretty(action.kind)).font(.caption.bold()).foregroundStyle(Color.csCyan)
-                Text(action.title).foregroundStyle(Color.csNavy).font(.headline).lineLimit(3)
+            HStack(spacing: 12) {
+                Image(systemName: actionIcon(action.kind))
+                    .foregroundStyle(action.kind == "QUERY" ? Color.csWarning : Color.csCyan)
+                    .frame(width: 38, height: 38)
+                    .background((action.kind == "QUERY" ? Color.csWarning : Color.csCyan).opacity(0.12))
+                    .clipShape(Circle())
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(pretty(action.kind)).font(.caption.bold()).foregroundStyle(action.kind == "QUERY" ? Color.csWarning : Color.csCyan)
+                    Text(action.title).foregroundStyle(Color.csNavy).font(.subheadline.weight(.semibold)).lineLimit(3)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right").font(.footnote.bold()).foregroundStyle(Color.csSecondary)
             }
         }
         switch action.kind {
@@ -509,19 +550,32 @@ private struct ChecklistView: View {
     var body: some View {
         ZStack {
             List {
+                if list == nil {
+                    ForEach(0..<4, id: \.self) { _ in RoundedRectangle(cornerRadius: 8).fill(Color.csPale).frame(height: 36).modifier(Shimmer()) }
+                }
                 if let progress = list?.progress {
-                    ProgressView(value: Double(progress.verified ?? 0), total: Double(max(progress.required ?? 1, 1))).tint(Color.csCyan)
+                    UploadProgressBar(done: progress.verified ?? 0, total: progress.required ?? 0).padding(.vertical, 4)
+                }
+                if let next = list?.items?.first(where: { $0.status != .verified }) {
+                    SaathiTip(text: "Next up: \(next.label ?? "document"). Tap it to take a photo or pick a file — I’ll check it instantly.\(next.fix.map { " Tip: \($0)" } ?? "")")
+                        .listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+                } else if list?.items?.isEmpty == false {
+                    SaathiTip(text: "All documents verified. The claims team is reviewing — you’ll get an alert for any query.")
+                        .listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
                 }
                 ForEach(list?.warnings ?? [], id: \.self) { Text($0).foregroundStyle(Color.csWarning) }
                 ForEach(list?.items ?? []) { item in
                     Button { picking = item.type; showChooser = true } label: {
-                        HStack {
+                        HStack(spacing: 12) {
+                            Image(systemName: item.status == .verified ? "checkmark.circle.fill" : item.status == .rejected ? "xmark.octagon.fill" : item.status == .uploaded ? "clock.fill" : "arrow.up.doc")
+                                .foregroundStyle(item.status == .verified ? Color.csSuccess : item.status == .rejected ? Color.csError : item.status == .uploaded ? Color.csWarning : Color.csCyan)
+                                .font(.title3)
                             VStack(alignment: .leading) {
                                 Text(item.label ?? "").foregroundStyle(Color.csNavy).bold()
                                 if let file = item.fileName { Text(file).font(.caption).foregroundStyle(Color.csSecondary) }
                             }
                             Spacer()
-                            StatusBadge(title: item.status?.rawValue ?? "", tint: item.status == .verified ? .csSuccess : item.status == .rejected ? .csError : .csSecondary)
+                            StatusBadge(title: item.status?.rawValue ?? "", tint: item.status == .verified ? .csSuccess : item.status == .rejected ? .csError : item.status == .uploaded ? .csWarning : .csSecondary)
                         }
                     }
                 }
@@ -542,6 +596,7 @@ private struct ChecklistView: View {
             }
         }
         .navigationTitle("Documents")
+        .saathiFab(prompt: "What documents are missing for my claim?", claimId: claimId)
         .documentSource(isPresented: $showChooser, name: picking?.rawValue.lowercased() ?? "document", onPick: { file in
             let type = picking?.rawValue
             app.run {
@@ -577,6 +632,7 @@ private struct ClaimsTab: View {
     @State private var claims: [Claim] = []
     @State private var filter: String?
     @State private var error: String?
+    @State private var loaded = false
     var body: some View {
         NavigationStack {
             List {
@@ -585,6 +641,12 @@ private struct ClaimsTab: View {
                     Text("Action").tag(String?.some("QUERY_RAISED,DOCS_PENDING"))
                     Text("Settled").tag(String?.some("SETTLED"))
                 }.pickerStyle(.segmented).listRowBackground(Color.clear)
+                if !loaded {
+                    ForEach(0..<3, id: \.self) { _ in SkeletonCard(lines: 2).listRowBackground(Color.clear).listRowSeparator(.hidden) }
+                } else if claims.isEmpty && error == nil {
+                    EmptyStateView(icon: "doc.text.magnifyingglass", title: "No claims here", message: "Start a claim from Home — it will show up here and update live.")
+                        .listRowBackground(Color.clear)
+                }
                 ForEach(claims) { claim in
                     NavigationLink { TrackingView(claimId: claim.id) } label: {
                         VStack(alignment: .leading, spacing: 6) {
@@ -598,7 +660,7 @@ private struct ClaimsTab: View {
                 if let error { Text(error).foregroundStyle(Color.csError) }
             }
             .navigationTitle("Claims")
-            .task(id: filter) { do { claims = try await API.shared.claims(status: filter); error = nil } catch { self.error = error.localizedDescription } }
+            .task(id: filter) { do { claims = try await API.shared.claims(status: filter); error = nil } catch { self.error = error.localizedDescription }; loaded = true }
             .refreshable { claims = (try? await API.shared.claims(status: filter)) ?? claims }
         }
     }
@@ -609,6 +671,25 @@ private struct TrackingView: View {
     @State private var timeline: Timeline?
     @State private var detail: Claim?
     @State private var error: String?
+    private func stepColor(_ state: StepState?) -> Color {
+        switch state {
+        case .done: .csSuccess
+        case .current: .csCyan
+        case .failed: .csError
+        default: .csPale
+        }
+    }
+    private var trackingTip: String? {
+        switch timeline?.status ?? detail?.status {
+        case .DOCS_PENDING, .CREATED, .PREAUTH_SUBMITTED: "Upload your documents one by one — each is verified instantly and the details fill in automatically."
+        case .UNDER_REVIEW, .NEEDS_HUMAN: "Your claim is with the claims team. If they need anything, you’ll get a query alert here."
+        case .QUERY_RAISED: "The insurer has a question. Tap the query below and reply with the requested file to keep things moving."
+        case .APPROVED: "Approved! Settlement is being processed — open Settlement to see every deduction explained."
+        case .SETTLED: "Paid. Open Settlement to see exactly why each amount was deducted."
+        case .REJECTED: "This claim was rejected. Ask Saathi to explain why and what you can do next."
+        default: nil
+        }
+    }
     var body: some View {
         List {
             if let d = detail {
@@ -627,18 +708,37 @@ private struct TrackingView: View {
                     }
                 }.listRowBackground(Color.clear)
             }
-            ForEach(timeline?.steps ?? []) { step in
-                HStack(alignment: .top, spacing: 12) {
-                    Circle()
-                        .fill(step.state == .current ? Color.csCyan : step.state == .done ? Color.csSuccess : step.state == .failed ? Color.csError : Color.csPale)
-                        .frame(width: 14, height: 14)
-                        .scaleEffect(step.state == .current ? 1.2 : 1)
-                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: step.state == .current)
-                    VStack(alignment: .leading) {
-                        Text(step.label ?? "").font(.headline).foregroundStyle(Color.csNavy)
-                        if let note = step.note { Text(note).font(.footnote).foregroundStyle(Color.csSecondary) }
+            if timeline == nil && error == nil {
+                SkeletonCard(lines: 4).listRowBackground(Color.clear).listRowSeparator(.hidden)
+            }
+            if let tip = trackingTip {
+                SaathiTip(text: tip).listRowBackground(Color.clear).listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            }
+            if let steps = timeline?.steps, !steps.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("PROGRESS").font(.caption.bold()).foregroundStyle(Color.csCyan).padding(.bottom, 10)
+                    ForEach(Array(steps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(spacing: 0) {
+                                ZStack {
+                                    Circle().fill(stepColor(step.state)).frame(width: 22, height: 22)
+                                    Image(systemName: step.state == .done ? "checkmark" : step.state == .failed ? "xmark" : step.state == .current ? "circle.fill" : "circle")
+                                        .font(.system(size: step.state == .current ? 7 : 10, weight: .bold)).foregroundStyle(.white)
+                                }
+                                if index < steps.count - 1 {
+                                    Rectangle().fill(step.state == .done ? Color.csSuccess : Color.csPale).frame(width: 2).frame(minHeight: 22)
+                                }
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(step.label ?? "").font(.subheadline.weight(step.state == .current ? .bold : .semibold))
+                                    .foregroundStyle(step.state == .pending ? Color.csSecondary : Color.csNavy)
+                                if let note = step.note { Text(note).font(.caption).foregroundStyle(Color.csSecondary) }
+                            }
+                            .padding(.bottom, 12)
+                        }
                     }
                 }
+                .padding(.vertical, 6)
             }
             ForEach(timeline?.openQueries ?? []) { q in
                 NavigationLink { QueryDetailView(queryId: q.id) } label: { Text("Reply: \(q.message ?? "Query")").foregroundStyle(Color.csWarning) }
@@ -649,6 +749,7 @@ private struct TrackingView: View {
             if let error { Text(error).foregroundStyle(Color.csError) }
         }
         .navigationTitle(timeline?.claimNumber ?? "Claim")
+        .saathiFab(prompt: "Track my claim and explain the next step", claimId: claimId)
         .task { while !Task.isCancelled { do { timeline = try await API.shared.timeline(claimId); detail = try await API.shared.claim(claimId); error = nil } catch { self.error = error.localizedDescription }; try? await Task.sleep(for: .seconds(5)) } }
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Link("PDF", destination: API.shared.summaryPdfURL(claimId)) } }
     }
@@ -713,6 +814,9 @@ private struct AlertsTab: View {
         NavigationStack {
             List {
                 Button("Mark all read") { app.run { try await API.shared.markAllRead(); notes = try await API.shared.notifications().items } }
+                if notes.isEmpty {
+                    EmptyStateView(icon: "bell.badge", title: "No alerts yet", message: "Claim updates in English & Hindi will appear here live.").listRowBackground(Color.clear)
+                }
                 ForEach(notes) { note in
                     Button {
                         app.run {
@@ -864,7 +968,11 @@ private struct SettlementView: View {
                     if let reason = line.reason { Text(reason).font(.footnote).foregroundStyle(Color.csSecondary) }
                 }
             }
-            Text("Approved \(inr(settlement?.approvedAmount))").font(.title2.bold()).foregroundStyle(Color.csSuccess)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(settlement?.status == .PAID ? "PAID TO YOUR ACCOUNT" : "APPROVED AMOUNT").font(.caption.bold()).foregroundStyle(Color.csSuccess)
+                Text(inr(settlement?.approvedAmount)).font(.system(size: 32, weight: .bold)).foregroundStyle(Color.csSuccess)
+                Text("Approved \(inr(settlement?.approvedAmount)) of \(inr(settlement?.billAmount)) bill").font(.caption).foregroundStyle(Color.csSecondary)
+            }.padding(.vertical, 4)
             if let status = settlement?.status { StatusBadge(title: pretty(status.rawValue), tint: status == .PAID ? .csSuccess : .csWarning) }
             if let explanation = settlement?.explanation { Text(explanation).font(.footnote).foregroundStyle(Color.csSecondary) }
             if let utr = settlement?.utr { Text("UTR \(utr)\(settlement?.paidAt.map { " · paid \(shortDate($0))" } ?? "")") }
@@ -872,6 +980,7 @@ private struct SettlementView: View {
             if let error { Text(error).foregroundStyle(Color.csError) }
         }
         .navigationTitle("Settlement")
+        .saathiFab(prompt: "Explain the deductions in my settlement", claimId: claimId)
         .task { do { settlement = try await API.shared.settlement(claimId) } catch { self.error = error.localizedDescription } }
     }
 }

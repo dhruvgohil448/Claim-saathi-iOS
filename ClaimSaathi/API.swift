@@ -59,6 +59,7 @@ final class API {
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 90
+        config.waitsForConnectivity = false
         return URLSession(configuration: config)
     }()
     private let decoder = JSONDecoder()
@@ -72,6 +73,8 @@ final class API {
         if !items.isEmpty { components.queryItems = items }
         var request = URLRequest(url: components.url!)
         request.httpMethod = method
+        // Fast-fail reads (15s); uploads/AI calls keep a longer budget for server-side validation.
+        request.timeoutInterval = method == "GET" ? 15 : 90
         if let token = TokenStore.token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         if let json {
             request.httpBody = try encodeSkippingNulls(json)

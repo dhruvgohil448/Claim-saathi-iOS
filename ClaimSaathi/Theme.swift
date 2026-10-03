@@ -3,7 +3,7 @@ import SwiftUI
 extension Color {
     static let csNavy = Color(red: 0 / 255, green: 46 / 255, blue: 110 / 255)
     static let csCyan = Color(red: 0 / 255, green: 186 / 255, blue: 242 / 255)
-    static let csBackground = Color(red: 245 / 255, green: 248 / 255, blue: 252 / 255)
+    static let csBackground = Color(red: 245 / 255, green: 247 / 255, blue: 250 / 255)
     static let csSuccess = Color(red: 18 / 255, green: 183 / 255, blue: 106 / 255)
     static let csWarning = Color(red: 247 / 255, green: 144 / 255, blue: 9 / 255)
     static let csError = Color(red: 240 / 255, green: 68 / 255, blue: 56 / 255)
@@ -35,8 +35,8 @@ struct CSCard<Content: View>: View {
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.white)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-            .shadow(color: Color.csNavy.opacity(0.08), radius: 12, y: 6)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .shadow(color: Color.csNavy.opacity(0.07), radius: 10, y: 4)
     }
 }
 
@@ -232,5 +232,181 @@ struct FieldBox: View {
                 .background(Color.csBackground)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+    }
+}
+
+
+// MARK: - Shared UI polish components
+
+struct Shimmer: ViewModifier {
+    @State private var phase: CGFloat = -1
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                GeometryReader { g in
+                    LinearGradient(colors: [Color.white.opacity(0), Color.white.opacity(0.65), Color.white.opacity(0)], startPoint: .leading, endPoint: .trailing)
+                        .frame(width: g.size.width * 0.5)
+                        .offset(x: phase * g.size.width * 1.5)
+                }
+                .allowsHitTesting(false)
+            )
+            .clipped()
+            .onAppear { withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { phase = 1.2 } }
+    }
+}
+
+struct SkeletonCard: View {
+    var lines: Int = 3
+    var body: some View {
+        CSCard {
+            VStack(alignment: .leading, spacing: 10) {
+                RoundedRectangle(cornerRadius: 6).fill(Color.csPale).frame(width: 110, height: 12)
+                ForEach(0..<lines, id: \.self) { i in
+                    RoundedRectangle(cornerRadius: 6).fill(Color.csPale.opacity(0.8))
+                        .frame(maxWidth: i == lines - 1 ? 170 : .infinity).frame(height: 12)
+                }
+            }
+        }
+        .modifier(Shimmer())
+    }
+}
+
+struct EmptyStateView: View {
+    let icon: String
+    let title: String
+    let message: String
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(Color.csCyan)
+                .frame(width: 64, height: 64)
+                .background(Color.csCyan.opacity(0.1))
+                .clipShape(Circle())
+            Text(title).font(.headline).foregroundStyle(Color.csNavy)
+            Text(message).font(.footnote).foregroundStyle(Color.csSecondary).multilineTextAlignment(.center)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity)
+    }
+}
+
+struct UploadProgressBar: View {
+    let done: Int
+    let total: Int
+    private var complete: Bool { total > 0 && done >= total }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: complete ? "checkmark.seal.fill" : "doc.badge.arrow.up.fill")
+                    .foregroundStyle(complete ? Color.csSuccess : Color.csCyan)
+                Text(complete ? "All documents verified" : "Documents verified")
+                    .font(.subheadline.bold()).foregroundStyle(Color.csNavy)
+                Spacer()
+                Text("\(done)/\(total)").font(.subheadline.bold()).foregroundStyle(complete ? Color.csSuccess : Color.csCyan)
+            }
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.csPale)
+                    Capsule().fill(complete ? Color.csSuccess : Color.csCyan)
+                        .frame(width: total > 0 ? g.size.width * CGFloat(min(done, total)) / CGFloat(total) : 0)
+                }
+            }
+            .frame(height: 8)
+            .animation(.spring(duration: 0.5), value: done)
+        }
+    }
+}
+
+struct SaathiAvatar: View {
+    var size: CGFloat = 30
+    var body: some View {
+        Image(systemName: "sparkles")
+            .font(.system(size: size * 0.45, weight: .bold))
+            .foregroundStyle(.white)
+            .frame(width: size, height: size)
+            .background(LinearGradient(colors: [Color.csCyan, Color.csNavy], startPoint: .topLeading, endPoint: .bottomTrailing))
+            .clipShape(Circle())
+    }
+}
+
+/// Small bot bubble that explains the current step / next document.
+struct SaathiTip: View {
+    let text: String
+    var action: (() -> Void)? = nil
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            SaathiAvatar()
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Saathi tip").font(.caption.bold()).foregroundStyle(Color.csCyan)
+                Text(text).font(.footnote).foregroundStyle(Color.csNavy).fixedSize(horizontal: false, vertical: true)
+                if let action {
+                    Button(action: action) { Text("Ask Saathi →").font(.caption.bold()) }.buttonStyle(.plain).foregroundStyle(Color.csCyan)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.csCyan.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(Color.csCyan.opacity(0.25), lineWidth: 1))
+    }
+}
+
+struct TypingDots: View {
+    @State private var on = false
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<3, id: \.self) { i in
+                Circle().fill(Color.csSecondary)
+                    .frame(width: 7, height: 7)
+                    .opacity(on ? 1 : 0.3)
+                    .scaleEffect(on ? 1 : 0.7)
+                    .animation(.easeInOut(duration: 0.5).repeatForever().delay(Double(i) * 0.18), value: on)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .onAppear { on = true }
+    }
+}
+
+/// Floating "Ask Saathi" button that opens the chat with context.
+struct SaathiFab: ViewModifier {
+    var prompt: String? = nil
+    var claimId: String? = nil
+    @Environment(AppState.self) private var app
+    @State private var open = false
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottomTrailing) {
+                Button { open = true } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "sparkles")
+                        Text("Ask Saathi").font(.system(size: 14, weight: .bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16).padding(.vertical, 12)
+                    .background(LinearGradient(colors: [Color.csCyan, Color(red: 0, green: 0.45, blue: 0.85)], startPoint: .leading, endPoint: .trailing))
+                    .clipShape(Capsule())
+                    .shadow(color: Color.csNavy.opacity(0.25), radius: 10, y: 4)
+                }
+                .buttonStyle(.plain)
+                .padding(16)
+            }
+            .sheet(isPresented: $open) {
+                ChatScreen(initialPrompt: prompt, contextClaimId: claimId, inSheet: true)
+                    .environment(app)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+    }
+}
+
+extension View {
+    func saathiFab(prompt: String? = nil, claimId: String? = nil) -> some View {
+        modifier(SaathiFab(prompt: prompt, claimId: claimId))
     }
 }
