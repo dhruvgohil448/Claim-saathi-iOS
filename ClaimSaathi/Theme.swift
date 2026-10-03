@@ -96,13 +96,14 @@ struct GhostButton: View {
 }
 
 struct BrandMark: View {
-    var width: CGFloat = 180
+    var size: CGFloat = 56
     var body: some View {
         Image("Logo")
             .resizable()
             .scaledToFit()
-            .frame(width: width)
-            .accessibilityLabel("Last Mile Link")
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+            .accessibilityLabel("Claim Saathi")
     }
 }
 
