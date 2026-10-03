@@ -54,7 +54,7 @@ enum APIError: LocalizedError {
 final class API {
     static let shared = API()
     let base = URL(string: Bundle.main.object(forInfoDictionaryKey: "API_BASE_URL") as? String
-        ?? "https://baking-picked-uncle-regardless.trycloudflare.com/api")!
+        ?? "https://charleston-computing-course-question.trycloudflare.com/api")!
     var onUnauthorized: () -> Void = {}
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
