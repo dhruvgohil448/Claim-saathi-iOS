@@ -267,7 +267,7 @@ private struct AddPolicyView: View {
     @State private var number = ""
     @State private var sum = ""
     @State private var start = "2026-01-01"
-    @State private var room = "5000"
+    @State private var room = "4000"
     @State private var copay = "10"
     @State private var savedId: String?
     @State private var fileName: String?
@@ -278,7 +278,7 @@ private struct AddPolicyView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Fill the details and attach the policy PDF. The file is stored and shown on the dashboard.")
+                Text("Fill the details and attach the policy PDF. Leave fields empty to use the demo cover (₹5L, room ₹4,000/day, 10% co-pay).")
                     .font(.footnote).foregroundStyle(Color.csSecondary)
                 FieldBox(title: "Insurer", text: $insurer)
                 FieldBox(title: "Policy number", text: $number)
@@ -288,7 +288,7 @@ private struct AddPolicyView: View {
                 FieldBox(title: "Co-pay %", text: $copay, keyboard: .numberPad)
                 GhostButton(title: fileName == nil ? "Upload policy document" : "Change document") { showFiles = true }
                 if let fileName { Text("Attached: \(fileName)").font(.footnote).foregroundStyle(Color.csSuccess) }
-                PrimaryButton(title: "Save policy", busy: app.busy, enabled: insurer.count >= 2 && number.count >= 3) {
+                PrimaryButton(title: "Save policy", busy: app.busy, enabled: true) {
                     app.run {
                         let body = AddPolicyBody(insurer: insurer, policyNumber: number, sumInsured: Int(sum) ?? 0, startDate: start, roomRentLimit: Int(room), coPayPercent: Double(copay))
                         let saved: AddPolicyResponse
