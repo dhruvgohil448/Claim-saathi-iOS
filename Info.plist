@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>API_BASE_URL</key>
-	<string>https://animation-hans-badge-note.trycloudflare.com/api</string>
+	<string>https://fda-lyrics-arts-legislative.trycloudflare.com/api</string>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>
